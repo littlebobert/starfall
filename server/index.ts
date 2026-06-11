@@ -48,6 +48,7 @@ interface SavePushSubscriptionPayload extends RoomPayload {
 interface SocketData {
   roomCode?: string;
   playerId?: PlayerId;
+  spectatorId?: string;
   playerName?: string;
 }
 
@@ -138,6 +139,11 @@ app.use((request, response, next) => {
 io.on("connection", (socket) => {
   socket.on("createRoom", async (payload: CreateRoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = createRoomCode();
+    if (!roomCode) {
+      ack?.({ ok: false, error: "All single-letter room codes are in use. Try again later." });
+      return;
+    }
+
     const playerName = normalizePlayerName(payload.playerName);
     const room = createRoom(roomCode);
 
@@ -149,7 +155,7 @@ io.on("connection", (socket) => {
     room.log.push(`${playerName} took command of Captain A.`);
     rooms.set(roomCode, room);
 
-    await joinSocketToRoom(socket, roomCode, "captainA", playerName);
+    await joinPlayerSocketToRoom(socket, roomCode, "captainA", playerName);
     ack?.({ ok: true, roomCode });
     await emitRoom(roomCode);
   });
@@ -164,21 +170,33 @@ io.on("connection", (socket) => {
     }
 
     const playerName = normalizePlayerName(payload.playerName);
-    const playerId = findJoinableSeat(room, playerName);
+    const rejoinPlayerId = findDisconnectedSeat(room, playerName);
+    const openPlayerId = room.phase === "lobby" ? findOpenCaptainSeat(room) : undefined;
+    const playerId = rejoinPlayerId ?? openPlayerId;
 
-    if (!playerId) {
-      ack?.({ ok: false, error: "Room is full or already in progress." });
+    if (playerId) {
+      room.players[playerId] = {
+        id: playerId,
+        name: playerName,
+        connected: true
+      };
+      room.log.push(`${playerName} joined as ${playerId === "captainA" ? "Captain A" : "Captain B"}.`);
+
+      await joinPlayerSocketToRoom(socket, roomCode, playerId, playerName);
+      ack?.({ ok: true, roomCode });
+      await emitRoom(roomCode);
       return;
     }
 
-    room.players[playerId] = {
-      id: playerId,
+    const spectatorId = createSpectatorId();
+    room.spectators[spectatorId] = {
+      id: spectatorId,
       name: playerName,
       connected: true
     };
-    room.log.push(`${playerName} joined as ${playerId === "captainA" ? "Captain A" : "Captain B"}.`);
+    room.log = [...room.log, `${playerName} is watching the battle.`].slice(-30);
 
-    await joinSocketToRoom(socket, roomCode, playerId, playerName);
+    await joinSpectatorSocketToRoom(socket, roomCode, spectatorId, playerName);
     ack?.({ ok: true, roomCode });
     await emitRoom(roomCode);
   });
@@ -188,6 +206,11 @@ io.on("connection", (socket) => {
 
     if (!room) {
       ack?.({ ok: false, error: "Join a room before starting." });
+      return;
+    }
+
+    if (!socket.data.playerId) {
+      ack?.({ ok: false, error: "Spectators cannot start combat." });
       return;
     }
 
@@ -274,6 +297,7 @@ io.on("connection", (socket) => {
   socket.on("disconnect", async () => {
     const roomCode = socket.data.roomCode;
     const playerId = socket.data.playerId;
+    const spectatorId = socket.data.spectatorId;
     const room = roomCode ? rooms.get(roomCode) : undefined;
 
     if (roomCode && room && playerId && room.players[playerId]) {
@@ -287,6 +311,13 @@ io.on("connection", (socket) => {
       ].slice(-30);
       await emitRoom(roomCode);
     }
+
+    if (roomCode && room && spectatorId && room.spectators[spectatorId]) {
+      const spectatorName = room.spectators[spectatorId].name;
+      delete room.spectators[spectatorId];
+      room.log = [...room.log, `${spectatorName} stopped watching.`].slice(-30);
+      await emitRoom(roomCode);
+    }
   });
 });
 
@@ -297,19 +328,38 @@ httpServer.listen(port, () => {
 async function joinSocketToRoom(
   socket: StarfallSocket,
   roomCode: string,
-  playerId: PlayerId,
   playerName: string
 ) {
   await leaveCurrentRoom(socket);
   socket.data.roomCode = roomCode;
-  socket.data.playerId = playerId;
   socket.data.playerName = playerName;
   await socket.join(roomCode);
+}
+
+async function joinPlayerSocketToRoom(
+  socket: StarfallSocket,
+  roomCode: string,
+  playerId: PlayerId,
+  playerName: string
+) {
+  await joinSocketToRoom(socket, roomCode, playerName);
+  socket.data.playerId = playerId;
+}
+
+async function joinSpectatorSocketToRoom(
+  socket: StarfallSocket,
+  roomCode: string,
+  spectatorId: string,
+  playerName: string
+) {
+  await joinSocketToRoom(socket, roomCode, playerName);
+  socket.data.spectatorId = spectatorId;
 }
 
 async function leaveCurrentRoom(socket: StarfallSocket) {
   const roomCode = socket.data.roomCode;
   const playerId = socket.data.playerId;
+  const spectatorId = socket.data.spectatorId;
   const room = roomCode ? rooms.get(roomCode) : undefined;
 
   if (room && playerId && room.players[playerId]) {
@@ -323,12 +373,19 @@ async function leaveCurrentRoom(socket: StarfallSocket) {
     ].slice(-30);
   }
 
+  if (room && spectatorId && room.spectators[spectatorId]) {
+    const spectatorName = room.spectators[spectatorId].name;
+    delete room.spectators[spectatorId];
+    room.log = [...room.log, `${spectatorName} stopped watching.`].slice(-30);
+  }
+
   if (roomCode) {
     await socket.leave(roomCode);
   }
 
   socket.data.roomCode = undefined;
   socket.data.playerId = undefined;
+  socket.data.spectatorId = undefined;
   socket.data.playerName = undefined;
 }
 
@@ -340,7 +397,7 @@ async function emitRoom(roomCode: string) {
 
   const sockets = await io.in(roomCode).fetchSockets();
   for (const socket of sockets) {
-    socket.emit("roomState", serializeRoom(room, socket.data.playerId));
+    socket.emit("roomState", serializeRoom(room, socket.data.playerId, socket.data.spectatorId));
   }
 }
 
@@ -356,26 +413,28 @@ function getSocketRoom(
   return rooms.get(normalizedRoomCode);
 }
 
-function findJoinableSeat(room: RoomState, playerName: string): PlayerId | undefined {
-  const disconnectedMatch = PLAYER_IDS.find((playerId) => {
+function findDisconnectedSeat(room: RoomState, playerName: string): PlayerId | undefined {
+  return PLAYER_IDS.find((playerId) => {
     const player = room.players[playerId];
     return player && !player.connected && player.name.toLowerCase() === playerName.toLowerCase();
   });
+}
 
-  if (disconnectedMatch) {
-    return disconnectedMatch;
-  }
-
-  if (room.phase !== "lobby") {
-    return undefined;
-  }
-
+function findOpenCaptainSeat(room: RoomState): PlayerId | undefined {
   return PLAYER_IDS.find((playerId) => !room.players[playerId]);
 }
 
-function createRoomCode(): string {
+function createSpectatorId(): string {
+  return `spectator-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function createRoomCode(): string | undefined {
   const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   let code = "";
+
+  if (rooms.size >= alphabet.length) {
+    return undefined;
+  }
 
   do {
     code = alphabet[Math.floor(Math.random() * alphabet.length)];

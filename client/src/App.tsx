@@ -122,6 +122,7 @@ export default function App() {
 
   const you = room?.you;
   const opponent = you ? (you === "captainA" ? "captainB" : "captainA") : undefined;
+  const isSpectator = Boolean(room?.spectatorId && !you);
   const youLockedIn = you ? room?.lockedIn[you] : false;
 
   function rememberName() {
@@ -153,7 +154,7 @@ export default function App() {
   }
 
   function startGame() {
-    if (!room) {
+    if (!room || !room.you) {
       return;
     }
 
@@ -332,6 +333,8 @@ export default function App() {
                     onSelectSystem={commandType === "repair" ? setRepairSystem : undefined}
                     interactionHint="Switch to repair, then click one of your rooms."
                   />
+                ) : room.ships.captainA ? (
+                  <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
                 ) : null}
                 {opponent ? (
                   <ShipPanel
@@ -343,6 +346,8 @@ export default function App() {
                     interactionHint="Switch to fire, then click an enemy room to target it."
                     enemy
                   />
+                ) : isSpectator && room.ships.captainB ? (
+                  <ShipPanel title="Captain B Ship" playerId="captainB" room={room} spectator enemy />
                 ) : null}
               </div>
 
@@ -350,6 +355,8 @@ export default function App() {
                 <h2>Turn {room.turn}</h2>
                 {room.phase === "finished" ? (
                   <VictoryBanner room={room} />
+                ) : isSpectator ? (
+                  <SpectatorPanel room={room} />
                 ) : (
                   <>
                     <p className="muted">
@@ -405,6 +412,7 @@ function RoomHeader({
         <h2>{room.code}</h2>
         <p className="muted">Share this code or the current URL with another player.</p>
       </div>
+      <SpectatorList room={room} />
       <div className="room-actions">
         <NotificationControl
           status={notificationStatus}
@@ -416,6 +424,21 @@ function RoomHeader({
         </button>
       </div>
     </section>
+  );
+}
+
+function SpectatorList({ room }: { room: ClientRoomState }) {
+  const spectators = Object.values(room.spectators).filter((spectator) => spectator.connected);
+
+  return (
+    <div className="spectator-list">
+      <span>Watching</span>
+      {spectators.length > 0 ? (
+        <strong>{spectators.map((spectator) => spectator.name).join(", ")}</strong>
+      ) : (
+        <strong>No spectators</strong>
+      )}
+    </div>
   );
 }
 
@@ -456,6 +479,7 @@ function NotificationControl({
 
 function Lobby({ room, onStart }: { room: ClientRoomState; onStart: () => void }) {
   const hasTwoPlayers = PLAYER_IDS.every((id) => room.players[id]?.connected);
+  const canStart = hasTwoPlayers && Boolean(room.you);
 
   return (
     <section className="panel lobby">
@@ -468,10 +492,21 @@ function Lobby({ room, onStart }: { room: ClientRoomState; onStart: () => void }
           <PlayerSeat key={playerId} room={room} playerId={playerId} />
         ))}
       </div>
-      <button onClick={onStart} disabled={!hasTwoPlayers}>
-        {hasTwoPlayers ? "Start combat" : "Waiting for second captain"}
+      <button onClick={onStart} disabled={!canStart}>
+        {canStart ? "Start combat" : hasTwoPlayers ? "Spectators cannot start combat" : "Waiting for second captain"}
       </button>
     </section>
+  );
+}
+
+function SpectatorPanel({ room }: { room: ClientRoomState }) {
+  return (
+    <div className="spectator-panel">
+      <p className="eyebrow">Spectator Mode</p>
+      <p className="muted">
+        You are watching this battle. Captains lock in orders, and turns resolve when both are ready.
+      </p>
+    </div>
   );
 }
 
@@ -495,7 +530,8 @@ function ShipPanel({
   selectedSystem,
   onSelectSystem,
   interactionHint,
-  enemy = false
+  enemy = false,
+  spectator = false
 }: {
   title: string;
   playerId: PlayerId;
@@ -504,6 +540,7 @@ function ShipPanel({
   onSelectSystem?: (systemId: SystemId) => void;
   interactionHint?: string;
   enemy?: boolean;
+  spectator?: boolean;
 }) {
   const ship = room.ships[playerId];
 
@@ -534,7 +571,7 @@ function ShipPanel({
         ship={ship}
         selectedSystem={selectedSystem}
         onSelectSystem={onSelectSystem}
-        interactionHint={interactionHint}
+        interactionHint={spectator ? "Spectator view: systems update as captains trade fire." : interactionHint}
         enemy={enemy}
       />
 

@@ -41,6 +41,12 @@ export interface PlayerState {
   connected: boolean;
 }
 
+export interface SpectatorState {
+  id: string;
+  name: string;
+  connected: boolean;
+}
+
 export interface CombatCommand {
   type: CommandType;
   targetSystem?: SystemId;
@@ -52,6 +58,7 @@ export interface RoomState {
   code: string;
   phase: RoomPhase;
   players: Partial<Record<PlayerId, PlayerState>>;
+  spectators: Record<string, SpectatorState>;
   ships: Partial<Record<PlayerId, Ship>>;
   turn: number;
   pendingCommands: Partial<Record<PlayerId, CombatCommand>>;
@@ -61,6 +68,7 @@ export interface RoomState {
 
 export interface ClientRoomState extends Omit<RoomState, "pendingCommands"> {
   you?: PlayerId;
+  spectatorId?: string;
   lockedIn: Record<PlayerId, boolean>;
 }
 
@@ -114,6 +122,7 @@ export function createRoom(code: string): RoomState {
     code,
     phase: "lobby",
     players: {},
+    spectators: {},
     ships: {},
     turn: 1,
     pendingCommands: {},
@@ -148,16 +157,18 @@ export function getOpponent(playerId: PlayerId): PlayerId {
   return playerId === "captainA" ? "captainB" : "captainA";
 }
 
-export function serializeRoom(room: RoomState, you?: PlayerId): ClientRoomState {
+export function serializeRoom(room: RoomState, you?: PlayerId, spectatorId?: string): ClientRoomState {
   return {
     code: room.code,
     phase: room.phase,
     players: room.players,
+    spectators: room.spectators,
     ships: room.ships,
     turn: room.turn,
     log: room.log,
     winner: room.winner,
     you,
+    spectatorId,
     lockedIn: {
       captainA: Boolean(room.pendingCommands.captainA),
       captainB: Boolean(room.pendingCommands.captainB)

@@ -166,6 +166,38 @@ p {
   gap: 0.6rem;
 }
 
+.spectator-list {
+  display: grid;
+  gap: 0.25rem;
+  min-width: 10rem;
+  max-width: 18rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.85rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.spectator-list span {
+  color: #93c5fd;
+  font-size: 0.65rem;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.spectator-list strong {
+  overflow: hidden;
+  color: #e2e8f0;
+  font-size: 0.82rem;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.spectator-panel {
+  display: grid;
+  gap: 0.5rem;
+}
+
 .notification-action {
   display: grid;
   gap: 0.25rem;
@@ -587,6 +619,20 @@ p {
     margin-bottom: 0;
   }
 
+  .spectator-list {
+    min-width: 8rem;
+    max-width: 14rem;
+    padding: 0.45rem 0.6rem;
+  }
+
+  .spectator-list span {
+    font-size: 0.58rem;
+  }
+
+  .spectator-list strong {
+    font-size: 0.7rem;
+  }
+
   .notification-action small,
   .notification-status {
     max-width: 10rem;
@@ -744,6 +790,18 @@ p {
   .ship-heading {
     align-items: flex-start;
     flex-direction: column;
+  }
+
+  .room-actions {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .notification-action,
+  .notification-action small,
+  .notification-status {
+    justify-items: start;
+    text-align: left;
   }
 
   .system-row {
