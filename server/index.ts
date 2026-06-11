@@ -1,4 +1,5 @@
 import express from "express";
+import { readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -74,6 +75,7 @@ const port = Number(process.env.PORT ?? 3001);
 const rooms = new Map<string, RoomState>();
 
 const app = express();
+app.set("trust proxy", true);
 const httpServer = createServer(app);
 const devOrigins = ["http://localhost:5173", "http://127.0.0.1:5173"];
 const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEvents, SocketData>(
@@ -89,14 +91,14 @@ app.get("/health", (_request, response) => {
   response.json({ ok: true, rooms: rooms.size });
 });
 
-app.use(express.static(clientDistPath));
+app.use(express.static(clientDistPath, { index: false }));
 app.use((request, response, next) => {
   if (request.method !== "GET" || request.path.startsWith("/socket.io")) {
     next();
     return;
   }
 
-  response.sendFile(path.join(clientDistPath, "index.html"));
+  response.type("html").send(renderIndexHtml(request));
 });
 
 io.on("connection", (socket) => {
@@ -324,4 +326,12 @@ function normalizeRoomCode(roomCode?: string): string | undefined {
 function normalizePlayerName(playerName?: string): string {
   const normalized = playerName?.trim();
   return normalized || `Captain ${Math.floor(Math.random() * 900 + 100)}`;
+}
+
+function renderIndexHtml(request: express.Request): string {
+  const indexPath = path.join(clientDistPath, "index.html");
+  const origin = process.env.PUBLIC_APP_URL ?? `${request.protocol}://${request.get("host")}`;
+  const previewUrl = `${origin}/starfall-link-preview.png`;
+
+  return readFileSync(indexPath, "utf8").replaceAll("/starfall-link-preview.png", previewUrl);
 }
