@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { CSSProperties, FormEvent } from "react";
 import { io, Socket } from "socket.io-client";
 import {
@@ -32,8 +32,14 @@ interface ClientToServerEvents {
     payload: { roomCode: string; command: CombatCommand },
     ack: (response: Ack) => void
   ) => void;
+  savePushSubscription: (
+    payload: { roomCode: string; subscription: PushSubscriptionJSON },
+    ack: (response: Ack) => void
+  ) => void;
   leaveRoom: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
 }
+
+type NotificationStatus = "unsupported" | "default" | "denied" | "syncing" | "enabled" | "error";
 
 const socketUrl =
   import.meta.env.VITE_SOCKET_URL ??
@@ -62,6 +68,9 @@ export default function App() {
   const [targetSystem, setTargetSystem] = useState<SystemId>("reactor");
   const [repairSystem, setRepairSystem] = useState<SystemId>("reactor");
   const [divertTarget, setDivertTarget] = useState<DivertTarget>("shields");
+  const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>(getInitialNotificationStatus);
+  const [notificationError, setNotificationError] = useState<string>();
+  const lastSyncedNotificationKey = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     function handleConnect() {
@@ -96,6 +105,20 @@ export default function App() {
       socket.off("roomState", handleRoomState);
     };
   }, []);
+
+  useEffect(() => {
+    if (!room?.code || !room.you || getInitialNotificationStatus() !== "enabled") {
+      return;
+    }
+
+    const syncKey = `${room.code}:${room.you}`;
+    if (lastSyncedNotificationKey.current === syncKey) {
+      return;
+    }
+
+    lastSyncedNotificationKey.current = syncKey;
+    syncPushSubscription(room.code);
+  }, [room?.code, room?.you]);
 
   const you = room?.you;
   const opponent = you ? (you === "captainA" ? "captainB" : "captainA") : undefined;
@@ -164,6 +187,75 @@ export default function App() {
     window.history.replaceState(null, "", window.location.pathname);
   }
 
+  async function enableNotifications() {
+    if (!room) {
+      return;
+    }
+
+    try {
+      setNotificationError(undefined);
+
+      if (getInitialNotificationStatus() === "unsupported") {
+        setNotificationStatus("unsupported");
+        return;
+      }
+
+      const permission =
+        Notification.permission === "default" ? await Notification.requestPermission() : Notification.permission;
+
+      if (permission === "denied") {
+        setNotificationStatus("denied");
+        return;
+      }
+
+      if (permission === "granted") {
+        await syncPushSubscription(room.code);
+      }
+    } catch (error) {
+      setNotificationStatus("error");
+      setNotificationError(error instanceof Error ? error.message : "Could not enable notifications.");
+    }
+  }
+
+  async function syncPushSubscription(roomCode: string) {
+    if (!("serviceWorker" in navigator) || !("PushManager" in window)) {
+      setNotificationStatus("unsupported");
+      return;
+    }
+
+    setNotificationStatus("syncing");
+    const registration = await navigator.serviceWorker.register("/service-worker.js");
+    const { publicKey } = (await fetch(`${socketUrl ?? ""}/api/push/public-key`).then((response) =>
+      response.json()
+    )) as {
+      publicKey: string;
+    };
+    let subscription = await registration.pushManager.getSubscription();
+
+    if (!subscription) {
+      subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: urlBase64ToUint8Array(publicKey)
+      });
+    }
+
+    await savePushSubscription(roomCode, subscription.toJSON());
+    setNotificationStatus("enabled");
+  }
+
+  function savePushSubscription(roomCode: string, subscription: PushSubscriptionJSON) {
+    return new Promise<void>((resolve, reject) => {
+      socket.emit("savePushSubscription", { roomCode, subscription }, (response: Ack) => {
+        if (response.ok) {
+          resolve();
+          return;
+        }
+
+        reject(new Error(response.error ?? "Server rejected notification setup."));
+      });
+    });
+  }
+
   return (
     <main className="app-shell">
       <header className="hero">
@@ -218,7 +310,13 @@ export default function App() {
         </section>
       ) : (
         <div className="game-layout">
-          <RoomHeader room={room} onLeave={leaveRoom} />
+          <RoomHeader
+            room={room}
+            onLeave={leaveRoom}
+            notificationStatus={notificationStatus}
+            notificationError={notificationError}
+            onEnableNotifications={enableNotifications}
+          />
 
           {room.phase === "lobby" ? (
             <Lobby room={room} onStart={startGame} />
@@ -287,7 +385,19 @@ export default function App() {
   );
 }
 
-function RoomHeader({ room, onLeave }: { room: ClientRoomState; onLeave: () => void }) {
+function RoomHeader({
+  room,
+  onLeave,
+  notificationStatus,
+  notificationError,
+  onEnableNotifications
+}: {
+  room: ClientRoomState;
+  onLeave: () => void;
+  notificationStatus: NotificationStatus;
+  notificationError?: string;
+  onEnableNotifications: () => void;
+}) {
   return (
     <section className="room-header panel">
       <div>
@@ -295,10 +405,52 @@ function RoomHeader({ room, onLeave }: { room: ClientRoomState; onLeave: () => v
         <h2>{room.code}</h2>
         <p className="muted">Share this code or the current URL with another player.</p>
       </div>
-      <button type="button" className="secondary" onClick={onLeave}>
-        Leave room
-      </button>
+      <div className="room-actions">
+        <NotificationControl
+          status={notificationStatus}
+          error={notificationError}
+          onEnable={onEnableNotifications}
+        />
+        <button type="button" className="secondary" onClick={onLeave}>
+          Leave room
+        </button>
+      </div>
     </section>
+  );
+}
+
+function NotificationControl({
+  status,
+  error,
+  onEnable
+}: {
+  status: NotificationStatus;
+  error?: string;
+  onEnable: () => void;
+}) {
+  if (status === "unsupported") {
+    return <span className="notification-status muted">Notifications unavailable</span>;
+  }
+
+  if (status === "denied") {
+    return <span className="notification-status muted">Notifications blocked in browser settings</span>;
+  }
+
+  if (status === "enabled") {
+    return <span className="notification-status enabled">Turn notifications on</span>;
+  }
+
+  if (status === "syncing") {
+    return <span className="notification-status muted">Enabling notifications...</span>;
+  }
+
+  return (
+    <div className="notification-action">
+      <button type="button" className="secondary" onClick={onEnable}>
+        Enable notifications
+      </button>
+      {status === "error" ? <small>{error ?? "Could not enable notifications."}</small> : null}
+    </div>
   );
 }
 
@@ -624,4 +776,33 @@ function BattleLog({ entries }: { entries: string[] }) {
       </ol>
     </section>
   );
+}
+
+function getInitialNotificationStatus(): NotificationStatus {
+  if (!("Notification" in window) || !("serviceWorker" in navigator) || !("PushManager" in window)) {
+    return "unsupported";
+  }
+
+  if (Notification.permission === "granted") {
+    return "enabled";
+  }
+
+  if (Notification.permission === "denied") {
+    return "denied";
+  }
+
+  return "default";
+}
+
+function urlBase64ToUint8Array(base64String: string): ArrayBuffer {
+  const padding = "=".repeat((4 - (base64String.length % 4)) % 4);
+  const base64 = `${base64String}${padding}`.replaceAll("-", "+").replaceAll("_", "/");
+  const rawData = window.atob(base64);
+  const outputArray = new Uint8Array(rawData.length);
+
+  for (let index = 0; index < rawData.length; index += 1) {
+    outputArray[index] = rawData.charCodeAt(index);
+  }
+
+  return outputArray.buffer;
 }

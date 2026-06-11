@@ -159,6 +159,32 @@ p {
   letter-spacing: 0.16em;
 }
 
+.room-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+}
+
+.notification-action {
+  display: grid;
+  gap: 0.25rem;
+  justify-items: end;
+}
+
+.notification-action small,
+.notification-status {
+  max-width: 15rem;
+  color: #94a3b8;
+  font-size: 0.72rem;
+  font-weight: 800;
+  text-align: right;
+}
+
+.notification-status.enabled {
+  color: #86efac;
+}
+
 .combat-grid {
   grid-template-columns: minmax(0, 1fr) 360px;
   align-items: start;
@@ -469,6 +495,238 @@ p {
   width: 100%;
   margin-bottom: 1rem;
   border: 1px solid rgba(248, 113, 113, 0.28);
+}
+
+@media (min-width: 1080px) {
+  html,
+  body,
+  #root {
+    min-height: 100vh;
+    overflow: hidden;
+  }
+
+  .app-shell {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    width: min(1240px, calc(100vw - 1.5rem));
+    height: 100vh;
+    padding: 0.75rem 0;
+  }
+
+  .hero {
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 0.35rem 1rem;
+    align-items: end;
+    margin-bottom: 0.6rem;
+  }
+
+  .hero h1 {
+    font-size: clamp(1.35rem, 2vw, 2rem);
+  }
+
+  .hero p:not(.eyebrow) {
+    margin-bottom: 0;
+    font-size: 0.82rem;
+  }
+
+  .hero .connection {
+    grid-column: 2;
+    grid-row: 1 / span 3;
+  }
+
+  .panel {
+    border-radius: 1rem;
+    padding: 0.8rem;
+  }
+
+  .landing-grid {
+    align-self: start;
+    align-items: start;
+    max-width: 980px;
+    margin: 0 auto;
+    padding: 1rem;
+  }
+
+  .landing-grid .stack {
+    align-content: start;
+    gap: 0.75rem;
+  }
+
+  .landing-grid h2 {
+    margin-bottom: 0.25rem;
+    font-size: 1.25rem;
+  }
+
+  .landing-grid input {
+    min-height: 2.6rem;
+  }
+
+  .landing-grid button {
+    justify-self: start;
+    min-width: 11rem;
+    padding-inline: 1.2rem;
+  }
+
+  .game-layout {
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: auto auto minmax(0, 1fr);
+    gap: 0.6rem;
+    min-height: 0;
+  }
+
+  .room-header {
+    grid-column: 1 / -1;
+    padding: 0.6rem 0.8rem;
+  }
+
+  .room-header h2 {
+    font-size: 1.45rem;
+  }
+
+  .room-header p {
+    margin-bottom: 0;
+  }
+
+  .notification-action small,
+  .notification-status {
+    max-width: 10rem;
+    font-size: 0.65rem;
+  }
+
+  .combat-grid {
+    display: contents;
+  }
+
+  .ship-column {
+    grid-column: 1;
+    grid-row: 2 / 4;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.6rem;
+    min-height: 0;
+  }
+
+  .ship-panel {
+    align-content: start;
+    gap: 0.55rem;
+    min-height: 0;
+  }
+
+  .ship-heading h2 {
+    margin-bottom: 0.1rem;
+    font-size: 1rem;
+  }
+
+  .ship-stat strong {
+    font-size: 1rem;
+  }
+
+  .ship-map {
+    grid-template-areas:
+      "engines reactor shields"
+      "lifeSupport weapons sensors";
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    grid-template-rows: repeat(2, minmax(52px, 1fr));
+    gap: 0.25rem;
+    padding: 0.75rem 0.9rem;
+  }
+
+  .ship-room {
+    padding: 0.42rem;
+  }
+
+  .ship-room span {
+    font-size: 0.56rem;
+  }
+
+  .ship-room strong {
+    font-size: 0.66rem;
+  }
+
+  .ship-room small,
+  .map-hint,
+  .system-row small {
+    display: none;
+  }
+
+  .systems-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.4rem;
+  }
+
+  .system-row {
+    grid-template-columns: minmax(0, 1fr) 74px;
+    gap: 0.45rem;
+    padding: 0.45rem;
+  }
+
+  .system-row strong,
+  .meter-label {
+    font-size: 0.68rem;
+  }
+
+  .meter {
+    gap: 0.2rem;
+  }
+
+  .meter-track,
+  .meter.compact .meter-track {
+    height: 0.42rem;
+  }
+
+  .command-panel {
+    position: static;
+    grid-column: 2;
+    grid-row: 2;
+    align-content: start;
+    gap: 0.65rem;
+  }
+
+  .command-panel h2 {
+    margin-bottom: 0;
+    font-size: 1.25rem;
+  }
+
+  .command-panel p {
+    margin-bottom: 0;
+    font-size: 0.78rem;
+  }
+
+  .stack {
+    gap: 0.55rem;
+  }
+
+  label,
+  .ready-pill {
+    font-size: 0.72rem;
+  }
+
+  input,
+  select,
+  button {
+    padding: 0.55rem 0.7rem;
+  }
+
+  button {
+    min-height: 2.35rem;
+  }
+
+  .battle-log {
+    grid-column: 2;
+    grid-row: 3;
+    min-height: 0;
+  }
+
+  .battle-log h2 {
+    margin-bottom: 0.55rem;
+    font-size: 1rem;
+  }
+
+  .battle-log ol {
+    max-height: 100%;
+    gap: 0.28rem;
+    font-size: 0.72rem;
+  }
 }
 
 @media (max-width: 860px) {

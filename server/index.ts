@@ -4,6 +4,7 @@ import { createServer } from "node:http";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { Server, Socket } from "socket.io";
+import webpush from "web-push";
 import {
   canStartCombat,
   ClientRoomState,
@@ -40,6 +41,10 @@ interface SubmitCommandPayload extends RoomPayload {
   command?: CombatCommand;
 }
 
+interface SavePushSubscriptionPayload extends RoomPayload {
+  subscription?: webpush.PushSubscription;
+}
+
 interface SocketData {
   roomCode?: string;
   playerId?: PlayerId;
@@ -51,6 +56,10 @@ interface ClientToServerEvents {
   joinRoom: (payload: JoinRoomPayload, ack?: (response: ClientAck) => void) => void;
   startGame: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   submitCommand: (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => void;
+  savePushSubscription: (
+    payload: SavePushSubscriptionPayload,
+    ack?: (response: ClientAck) => void
+  ) => void;
   leaveRoom: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
 }
 
@@ -71,8 +80,20 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 const clientDistPath = path.resolve(__dirname, "../client");
 const port = Number(process.env.PORT ?? 3001);
+const generatedVapidKeys =
+  process.env.VAPID_PUBLIC_KEY && process.env.VAPID_PRIVATE_KEY ? undefined : webpush.generateVAPIDKeys();
+const vapidPublicKey = process.env.VAPID_PUBLIC_KEY ?? generatedVapidKeys?.publicKey ?? "";
+const vapidPrivateKey = process.env.VAPID_PRIVATE_KEY ?? generatedVapidKeys?.privateKey ?? "";
+const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:starfall@example.com";
 
 const rooms = new Map<string, RoomState>();
+const pushSubscriptions = new Map<string, Map<PlayerId, Map<string, webpush.PushSubscription>>>();
+
+webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
+
+if (generatedVapidKeys) {
+  console.warn("Using generated VAPID keys. Set VAPID_PUBLIC_KEY and VAPID_PRIVATE_KEY on Heroku for stability.");
+}
 
 const app = express();
 app.set("trust proxy", true);
@@ -87,8 +108,21 @@ const io = new Server<ClientToServerEvents, ServerToClientEvents, InterServerEve
   }
 );
 
+app.use((request, response, next) => {
+  const origin = request.headers.origin;
+  if (process.env.NODE_ENV !== "production" && origin && devOrigins.includes(origin)) {
+    response.setHeader("Access-Control-Allow-Origin", origin);
+  }
+
+  next();
+});
+
 app.get("/health", (_request, response) => {
   response.json({ ok: true, rooms: rooms.size });
+});
+
+app.get("/api/push/public-key", (_request, response) => {
+  response.json({ publicKey: vapidPublicKey });
 });
 
 app.use(express.static(clientDistPath, { index: false }));
@@ -162,9 +196,14 @@ io.on("connection", (socket) => {
       return;
     }
 
-    rooms.set(room.code, startCombat(room));
+    const startedRoom = startCombat(room);
+    rooms.set(room.code, startedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
+    await notifyPlayers(startedRoom, PLAYER_IDS, {
+      title: "Combat started",
+      body: `Room ${room.code} is live. Choose your opening orders.`
+    });
   });
 
   socket.on("submitCommand", async (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => {
@@ -188,12 +227,39 @@ io.on("connection", (socket) => {
     ].slice(-30);
 
     if (PLAYER_IDS.every((id) => room.pendingCommands[id])) {
-      rooms.set(room.code, resolveTurn(room));
+      const resolvedRoom = resolveTurn(room);
+      rooms.set(room.code, resolvedRoom);
+      ack?.({ ok: true, roomCode: room.code });
+      await emitRoom(room.code);
+      await notifyTurnResult(resolvedRoom);
+      return;
     }
 
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
+    await notifyWaitingPlayers(room, playerId);
   });
+
+  socket.on(
+    "savePushSubscription",
+    async (payload: SavePushSubscriptionPayload, ack?: (response: ClientAck) => void) => {
+      const room = getSocketRoom(socket, payload.roomCode);
+      const playerId = socket.data.playerId;
+
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: "Join a room before enabling notifications." });
+        return;
+      }
+
+      if (!payload.subscription?.endpoint) {
+        ack?.({ ok: false, error: "Browser did not provide a valid push subscription." });
+        return;
+      }
+
+      storePushSubscription(room.code, playerId, payload.subscription);
+      ack?.({ ok: true, roomCode: room.code });
+    }
+  );
 
   socket.on("leaveRoom", async (_payload: RoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = socket.data.roomCode;
@@ -308,11 +374,11 @@ function findJoinableSeat(room: RoomState, playerName: string): PlayerId | undef
 }
 
 function createRoomCode(): string {
-  const alphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+  const alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
   let code = "";
 
   do {
-    code = Array.from({ length: 5 }, () => alphabet[Math.floor(Math.random() * alphabet.length)]).join("");
+    code = alphabet[Math.floor(Math.random() * alphabet.length)];
   } while (rooms.has(code));
 
   return code;
@@ -334,4 +400,96 @@ function renderIndexHtml(request: express.Request): string {
   const previewUrl = `${origin}/starfall-link-preview.png`;
 
   return readFileSync(indexPath, "utf8").replaceAll("/starfall-link-preview.png", previewUrl);
+}
+
+function storePushSubscription(
+  roomCode: string,
+  playerId: PlayerId,
+  subscription: webpush.PushSubscription
+) {
+  const roomSubscriptions = pushSubscriptions.get(roomCode) ?? new Map<PlayerId, Map<string, webpush.PushSubscription>>();
+  const playerSubscriptions = roomSubscriptions.get(playerId) ?? new Map<string, webpush.PushSubscription>();
+
+  playerSubscriptions.set(subscription.endpoint, subscription);
+  roomSubscriptions.set(playerId, playerSubscriptions);
+  pushSubscriptions.set(roomCode, roomSubscriptions);
+}
+
+async function notifyWaitingPlayers(room: RoomState, submittedBy: PlayerId) {
+  const waitingPlayers = PLAYER_IDS.filter((playerId) => !room.pendingCommands[playerId]);
+  const submittedName = room.players[submittedBy]?.name ?? "The other captain";
+
+  await notifyPlayers(room, waitingPlayers, {
+    title: "Your orders are needed",
+    body: `${submittedName} has locked in orders for turn ${room.turn}.`,
+    tag: `starfall-${room.code}-turn-${room.turn}-waiting`
+  });
+}
+
+async function notifyTurnResult(room: RoomState) {
+  if (room.phase === "finished") {
+    const winnerName = room.winner ? room.players[room.winner]?.name ?? "A captain" : "No one";
+    await notifyPlayers(room, PLAYER_IDS, {
+      title: "Battle ended",
+      body: `${winnerName} controls the field in room ${room.code}.`,
+      tag: `starfall-${room.code}-finished`
+    });
+    return;
+  }
+
+  await notifyPlayers(room, PLAYER_IDS, {
+    title: `Turn ${room.turn} ready`,
+    body: `Review the battle log and choose your next orders in room ${room.code}.`,
+    tag: `starfall-${room.code}-turn-${room.turn}`
+  });
+}
+
+async function notifyPlayers(
+  room: RoomState,
+  playerIds: PlayerId[],
+  notification: { title: string; body: string; tag?: string }
+) {
+  await Promise.all(playerIds.map((playerId) => notifyPlayer(room, playerId, notification)));
+}
+
+async function notifyPlayer(
+  room: RoomState,
+  playerId: PlayerId,
+  notification: { title: string; body: string; tag?: string }
+) {
+  const playerSubscriptions = pushSubscriptions.get(room.code)?.get(playerId);
+  if (!playerSubscriptions?.size) {
+    return;
+  }
+
+  const payload = JSON.stringify({
+    title: notification.title,
+    body: notification.body,
+    tag: notification.tag ?? `starfall-${room.code}`,
+    url: `/?room=${room.code}`
+  });
+
+  await Promise.all(
+    Array.from(playerSubscriptions.entries()).map(async ([endpoint, subscription]) => {
+      try {
+        await webpush.sendNotification(subscription, payload);
+      } catch (error) {
+        if (isExpiredPushSubscription(error)) {
+          playerSubscriptions.delete(endpoint);
+          return;
+        }
+
+        console.warn("Failed to send push notification", error);
+      }
+    })
+  );
+}
+
+function isExpiredPushSubscription(error: unknown): boolean {
+  if (!error || typeof error !== "object" || !("statusCode" in error)) {
+    return false;
+  }
+
+  const statusCode = Number((error as { statusCode?: number }).statusCode);
+  return statusCode === 404 || statusCode === 410;
 }
