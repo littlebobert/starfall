@@ -47,6 +47,23 @@ export interface SpectatorState {
   connected: boolean;
 }
 
+export interface ChatMessage {
+  id: string;
+  author: string;
+  role: "captainA" | "captainB" | "spectator";
+  text: string;
+  createdAt: number;
+}
+
+export interface RecentGame {
+  id: string;
+  roomCode: string;
+  winnerName: string;
+  loserName: string;
+  rounds: number;
+  completedAt: number;
+}
+
 export interface CombatCommand {
   type: CommandType;
   targetSystem?: SystemId;
@@ -63,6 +80,7 @@ export interface RoomState {
   turn: number;
   pendingCommands: Partial<Record<PlayerId, CombatCommand>>;
   log: string[];
+  chat: ChatMessage[];
   winner?: PlayerId;
 }
 
@@ -126,7 +144,8 @@ export function createRoom(code: string): RoomState {
     ships: {},
     turn: 1,
     pendingCommands: {},
-    log: [`Room ${code} created. Waiting for captains.`]
+    log: [`Room ${code} created. Waiting for captains.`],
+    chat: []
   };
 }
 
@@ -166,6 +185,7 @@ export function serializeRoom(room: RoomState, you?: PlayerId, spectatorId?: str
     ships: room.ships,
     turn: room.turn,
     log: room.log,
+    chat: room.chat,
     winner: room.winner,
     you,
     spectatorId,
@@ -291,9 +311,12 @@ function applyPreparationCommand(
     const systemId = command.repairSystem ?? "reactor";
     const system = ship.systems[systemId];
     const repairAmount = systemId === "reactor" ? 1 : 2;
+    const previousHp = system.hp;
     system.hp = clamp(system.hp + repairAmount, 0, system.maxHp);
     ship.hull = clamp(ship.hull + 1, 0, ship.maxHull);
-    entries.push(`${labelFor(playerId)} repairs ${system.name}.`);
+    entries.push(
+      `${labelFor(playerId)} repairs ${system.name} from ${previousHp}/${system.maxHp} to ${system.hp}/${system.maxHp}.`
+    );
     return;
   }
 
@@ -386,6 +409,7 @@ function applyFireCommand(
     entries.push(`${labelFor(getOpponent(playerId))}'s shields absorb ${absorbed} damage.`);
   }
 
+  const previousSystemHp = defender.systems[targetSystem].hp;
   defender.hull = clamp(defender.hull - hullDamage, 0, defender.maxHull);
   defender.systems[targetSystem].hp = clamp(
     defender.systems[targetSystem].hp - systemDamage,
@@ -393,7 +417,7 @@ function applyFireCommand(
     defender.systems[targetSystem].maxHp
   );
   entries.push(
-    `${labelFor(playerId)} hits ${defender.systems[targetSystem].name} for ${hullDamage} hull damage.`
+    `${labelFor(playerId)} hits ${defender.systems[targetSystem].name} for ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
   );
 }
 

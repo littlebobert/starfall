@@ -24,9 +24,15 @@ self.addEventListener("notificationclick", (event) => {
 
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const roomCode = new URL(targetUrl).searchParams.get("room");
+
       for (const client of clients) {
         if ("focus" in client) {
-          client.navigate(targetUrl);
+          client.postMessage({
+            type: "starfall-open-room",
+            roomCode,
+            url: targetUrl
+          });
           return client.focus();
         }
       }

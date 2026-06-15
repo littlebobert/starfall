@@ -7,6 +7,7 @@ import {
   DivertTarget,
   PLAYER_IDS,
   PlayerId,
+  RecentGame,
   Ship,
   SYSTEM_DEFINITIONS,
   SystemId
@@ -22,6 +23,7 @@ type ClientSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 
 interface ServerToClientEvents {
   roomState: (state: ClientRoomState) => void;
+  recentGames: (games: RecentGame[]) => void;
 }
 
 interface ClientToServerEvents {
@@ -32,6 +34,7 @@ interface ClientToServerEvents {
     payload: { roomCode: string; command: CombatCommand },
     ack: (response: Ack) => void
   ) => void;
+  sendChat: (payload: { roomCode: string; text: string }, ack: (response: Ack) => void) => void;
   savePushSubscription: (
     payload: { roomCode: string; subscription: PushSubscriptionJSON },
     ack: (response: Ack) => void
@@ -61,9 +64,18 @@ export default function App() {
   const [playerName, setPlayerName] = useState(
     () => window.localStorage.getItem("starfall-player-name") ?? ""
   );
-  const [joinCode, setJoinCode] = useState(() => new URLSearchParams(window.location.search).get("room") ?? "");
+  const [joinCode, setJoinCode] = useState(
+    () =>
+      new URLSearchParams(window.location.search).get("room") ??
+      window.localStorage.getItem("starfall-room-code") ??
+      ""
+  );
   const [error, setError] = useState<string>();
   const [isConnected, setIsConnected] = useState(socket.connected);
+  const [recentGames, setRecentGames] = useState<RecentGame[]>([]);
+  const [workSafeMode, setWorkSafeMode] = useState(
+    () => window.localStorage.getItem("starfall-work-safe") === "true"
+  );
   const [commandType, setCommandType] = useState<CombatCommand["type"]>("fire");
   const [targetSystem, setTargetSystem] = useState<SystemId>("reactor");
   const [repairSystem, setRepairSystem] = useState<SystemId>("reactor");
@@ -71,6 +83,7 @@ export default function App() {
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>(getInitialNotificationStatus);
   const [notificationError, setNotificationError] = useState<string>();
   const lastSyncedNotificationKey = useRef<string | undefined>(undefined);
+  const autoJoinAttemptedKey = useRef<string | undefined>(undefined);
 
   useEffect(() => {
     function handleConnect() {
@@ -91,20 +104,64 @@ export default function App() {
       setRoom(nextRoom);
       setJoinCode(nextRoom.code);
       window.history.replaceState(null, "", `?room=${nextRoom.code}`);
+      window.localStorage.setItem("starfall-room-code", nextRoom.code);
+    }
+
+    function handleRecentGames(nextRecentGames: RecentGame[]) {
+      setRecentGames(nextRecentGames);
     }
 
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("connect_error", handleConnectError);
     socket.on("roomState", handleRoomState);
+    socket.on("recentGames", handleRecentGames);
 
     return () => {
       socket.off("connect", handleConnect);
       socket.off("disconnect", handleDisconnect);
       socket.off("connect_error", handleConnectError);
       socket.off("roomState", handleRoomState);
+      socket.off("recentGames", handleRecentGames);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isConnected || room || !joinCode || !playerName.trim()) {
+      return;
+    }
+
+    const autoJoinKey = `${joinCode}:${playerName.trim()}`;
+    if (autoJoinAttemptedKey.current === autoJoinKey) {
+      return;
+    }
+
+    autoJoinAttemptedKey.current = autoJoinKey;
+    socket.emit("joinRoom", { roomCode: joinCode, playerName: playerName.trim() }, (response) => {
+      if (!response.ok) {
+        window.localStorage.removeItem("starfall-room-code");
+      }
+    });
+  }, [isConnected, joinCode, playerName, room]);
+
+  useEffect(() => {
+    function handleServiceWorkerMessage(event: MessageEvent) {
+      if (event.data?.type !== "starfall-open-room" || !event.data.roomCode) {
+        return;
+      }
+
+      const nextRoomCode = String(event.data.roomCode).toUpperCase();
+      setJoinCode(nextRoomCode);
+      window.localStorage.setItem("starfall-room-code", nextRoomCode);
+
+      if (!room && playerName.trim()) {
+        socket.emit("joinRoom", { roomCode: nextRoomCode, playerName: playerName.trim() }, handleAck);
+      }
+    }
+
+    navigator.serviceWorker?.addEventListener("message", handleServiceWorkerMessage);
+    return () => navigator.serviceWorker?.removeEventListener("message", handleServiceWorkerMessage);
+  }, [playerName, room]);
 
   useEffect(() => {
     if (!room?.code || !room.you || getInitialNotificationStatus() !== "enabled") {
@@ -140,6 +197,7 @@ export default function App() {
     setError(undefined);
     if (response.roomCode) {
       window.history.replaceState(null, "", `?room=${response.roomCode}`);
+      window.localStorage.setItem("starfall-room-code", response.roomCode);
     }
   }
 
@@ -185,7 +243,16 @@ export default function App() {
 
     socket.emit("leaveRoom", { roomCode: room.code }, handleAck);
     setRoom(undefined);
+    window.localStorage.removeItem("starfall-room-code");
     window.history.replaceState(null, "", window.location.pathname);
+  }
+
+  function toggleWorkSafeMode() {
+    setWorkSafeMode((current) => {
+      const next = !current;
+      window.localStorage.setItem("starfall-work-safe", String(next));
+      return next;
+    });
   }
 
   async function enableNotifications() {
@@ -258,14 +325,18 @@ export default function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className={workSafeMode ? "app-shell work-safe" : "app-shell"}>
       <header className="hero">
-        <p className="eyebrow">Starfall Commander</p>
-        <h1>Turn-based tactical starship combat</h1>
+        <p className="eyebrow">{workSafeMode ? "Operations Review" : "Starfall Commander"}</p>
+        <h1>{workSafeMode ? "Room activity dashboard" : "Turn-based tactical starship combat"}</h1>
         <p>
-          Create a room, send the code to another captain, and fight by disabling reactors, weapons,
-          shields, engines, sensors, and life support.
+          {workSafeMode
+            ? "Create or join a room, coordinate actions, and review recent outcomes."
+            : "Create a room, send the code to another captain, and fight by disabling reactors, weapons, shields, engines, sensors, and life support."}
         </p>
+        <button type="button" className="secondary mode-toggle" onClick={toggleWorkSafeMode}>
+          {workSafeMode ? "Game view" : "Work-safe view"}
+        </button>
         <div className={`connection ${isConnected ? "online" : "offline"}`}>
           {isConnected ? "Connected to command net" : "Reconnecting to command net"}
         </div>
@@ -274,40 +345,43 @@ export default function App() {
       {error ? <div className="error-banner">{error}</div> : null}
 
       {!room ? (
-        <section className="panel landing-grid">
-          <form onSubmit={createRoom} className="stack">
-            <h2>Create a Room</h2>
-            <label>
-              Captain name
-              <input
-                value={playerName}
-                onChange={(event) => setPlayerName(event.target.value)}
-                placeholder="Captain Vale"
-              />
-            </label>
-            <button type="submit">Create room</button>
-          </form>
+        <section className="landing-layout">
+          <div className="panel landing-grid">
+            <form onSubmit={createRoom} className="stack">
+              <h2>Create a Room</h2>
+              <label>
+                Captain name
+                <input
+                  value={playerName}
+                  onChange={(event) => setPlayerName(event.target.value)}
+                  placeholder="Captain Vale"
+                />
+              </label>
+              <button type="submit">Create room</button>
+            </form>
 
-          <form onSubmit={joinRoom} className="stack">
-            <h2>Join a Room</h2>
-            <label>
-              Room code
-              <input
-                value={joinCode}
-                onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
-                placeholder="A7K9Q"
-              />
-            </label>
-            <label>
-              Captain name
-              <input
-                value={playerName}
-                onChange={(event) => setPlayerName(event.target.value)}
-                placeholder="Captain Rook"
-              />
-            </label>
-            <button type="submit">Join room</button>
-          </form>
+            <form onSubmit={joinRoom} className="stack">
+              <h2>Join a Room</h2>
+              <label>
+                Room code
+                <input
+                  value={joinCode}
+                  onChange={(event) => setJoinCode(event.target.value.toUpperCase())}
+                  placeholder="A"
+                />
+              </label>
+              <label>
+                Captain name
+                <input
+                  value={playerName}
+                  onChange={(event) => setPlayerName(event.target.value)}
+                  placeholder="Captain Rook"
+                />
+              </label>
+              <button type="submit">Join room</button>
+            </form>
+          </div>
+          <RecentGames games={recentGames} />
         </section>
       ) : (
         <div className="game-layout">
@@ -330,8 +404,15 @@ export default function App() {
                     playerId={you}
                     room={room}
                     selectedSystem={commandType === "repair" ? repairSystem : undefined}
-                    onSelectSystem={commandType === "repair" ? setRepairSystem : undefined}
-                    interactionHint="Switch to repair, then click one of your rooms."
+                    onSelectSystem={
+                      youLockedIn
+                        ? undefined
+                        : (systemId) => {
+                            setCommandType("repair");
+                            setRepairSystem(systemId);
+                          }
+                    }
+                    interactionHint="Click one of your rooms to set a repair order."
                   />
                 ) : room.ships.captainA ? (
                   <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
@@ -342,8 +423,15 @@ export default function App() {
                     playerId={opponent}
                     room={room}
                     selectedSystem={commandType === "fire" ? targetSystem : undefined}
-                    onSelectSystem={commandType === "fire" ? setTargetSystem : undefined}
-                    interactionHint="Switch to fire, then click an enemy room to target it."
+                    onSelectSystem={
+                      youLockedIn
+                        ? undefined
+                        : (systemId) => {
+                            setCommandType("fire");
+                            setTargetSystem(systemId);
+                          }
+                    }
+                    interactionHint="Click an enemy room to set a fire order."
                     enemy
                   />
                 ) : isSpectator && room.ships.captainB ? (
@@ -386,6 +474,7 @@ export default function App() {
           )}
 
           <BattleLog entries={room.log} />
+          <ChatPanel room={room} />
         </div>
       )}
     </main>
@@ -474,6 +563,26 @@ function NotificationControl({
       </button>
       {status === "error" ? <small>{error ?? "Could not enable notifications."}</small> : null}
     </div>
+  );
+}
+
+function RecentGames({ games }: { games: RecentGame[] }) {
+  return (
+    <section className="panel recent-games">
+      <h2>Recent Games</h2>
+      {games.length === 0 ? (
+        <p className="muted">No completed games yet.</p>
+      ) : (
+        <ul>
+          {games.map((game) => (
+            <li key={game.id}>
+              <strong>{game.winnerName}</strong> beat {game.loserName} in {game.rounds}{" "}
+              {game.rounds === 1 ? "round" : "rounds"}.
+            </li>
+          ))}
+        </ul>
+      )}
+    </section>
   );
 }
 
@@ -811,6 +920,52 @@ function BattleLog({ entries }: { entries: string[] }) {
             <li key={`${entry}-${index}`}>{entry}</li>
           ))}
       </ol>
+    </section>
+  );
+}
+
+function ChatPanel({ room }: { room: ClientRoomState }) {
+  const [message, setMessage] = useState("");
+
+  function sendMessage(event: FormEvent) {
+    event.preventDefault();
+    const text = message.trim();
+
+    if (!text) {
+      return;
+    }
+
+    socket.emit("sendChat", { roomCode: room.code, text }, (response) => {
+      if (response.ok) {
+        setMessage("");
+      }
+    });
+  }
+
+  return (
+    <section className="panel chat-panel">
+      <h2>Comms</h2>
+      <div className="chat-messages">
+        {room.chat.length === 0 ? (
+          <p className="muted">No messages yet.</p>
+        ) : (
+          room.chat.slice(-8).map((chatMessage) => (
+            <div key={chatMessage.id} className="chat-message">
+              <strong>{chatMessage.author}</strong>
+              <span>{chatMessage.text}</span>
+            </div>
+          ))
+        )}
+      </div>
+      <form onSubmit={sendMessage} className="chat-form">
+        <input
+          value={message}
+          onChange={(event) => setMessage(event.target.value)}
+          placeholder="Send a quick message"
+          maxLength={280}
+        />
+        <button type="submit">Send</button>
+      </form>
     </section>
   );
 }

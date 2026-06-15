@@ -7,11 +7,13 @@ import { Server, Socket } from "socket.io";
 import webpush from "web-push";
 import {
   canStartCombat,
+  ChatMessage,
   ClientRoomState,
   CombatCommand,
   createRoom,
   PlayerId,
   PLAYER_IDS,
+  RecentGame,
   resolveTurn,
   RoomState,
   serializeRoom,
@@ -41,6 +43,10 @@ interface SubmitCommandPayload extends RoomPayload {
   command?: CombatCommand;
 }
 
+interface SendChatPayload extends RoomPayload {
+  text?: string;
+}
+
 interface SavePushSubscriptionPayload extends RoomPayload {
   subscription?: webpush.PushSubscription;
 }
@@ -57,6 +63,7 @@ interface ClientToServerEvents {
   joinRoom: (payload: JoinRoomPayload, ack?: (response: ClientAck) => void) => void;
   startGame: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   submitCommand: (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => void;
+  sendChat: (payload: SendChatPayload, ack?: (response: ClientAck) => void) => void;
   savePushSubscription: (
     payload: SavePushSubscriptionPayload,
     ack?: (response: ClientAck) => void
@@ -66,6 +73,7 @@ interface ClientToServerEvents {
 
 interface ServerToClientEvents {
   roomState: (state: ClientRoomState) => void;
+  recentGames: (games: RecentGame[]) => void;
 }
 
 interface InterServerEvents {}
@@ -89,6 +97,7 @@ const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:starfall@example.com";
 
 const rooms = new Map<string, RoomState>();
 const pushSubscriptions = new Map<string, Map<PlayerId, Map<string, webpush.PushSubscription>>>();
+const recentGames: RecentGame[] = [];
 
 webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
@@ -137,6 +146,8 @@ app.use((request, response, next) => {
 });
 
 io.on("connection", (socket) => {
+  socket.emit("recentGames", recentGames);
+
   socket.on("createRoom", async (payload: CreateRoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = createRoomCode();
     if (!roomCode) {
@@ -252,6 +263,7 @@ io.on("connection", (socket) => {
     if (PLAYER_IDS.every((id) => room.pendingCommands[id])) {
       const resolvedRoom = resolveTurn(room);
       rooms.set(room.code, resolvedRoom);
+      recordRecentGame(room, resolvedRoom);
       ack?.({ ok: true, roomCode: room.code });
       await emitRoom(room.code);
       await notifyTurnResult(resolvedRoom);
@@ -261,6 +273,26 @@ io.on("connection", (socket) => {
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
     await notifyWaitingPlayers(room, playerId);
+  });
+
+  socket.on("sendChat", async (payload: SendChatPayload, ack?: (response: ClientAck) => void) => {
+    const room = getSocketRoom(socket, payload.roomCode);
+    const text = payload.text?.trim();
+
+    if (!room) {
+      ack?.({ ok: false, error: "Join a room before chatting." });
+      return;
+    }
+
+    if (!text) {
+      ack?.({ ok: false, error: "Message cannot be empty." });
+      return;
+    }
+
+    const message = createChatMessage(socket, text);
+    room.chat = [...room.chat, message].slice(-50);
+    ack?.({ ok: true, roomCode: room.code });
+    await emitRoom(room.code);
   });
 
   socket.on(
@@ -459,6 +491,41 @@ function renderIndexHtml(request: express.Request): string {
   const previewUrl = `${origin}/starfall-link-preview.png`;
 
   return readFileSync(indexPath, "utf8").replaceAll("/starfall-link-preview.png", previewUrl);
+}
+
+function createChatMessage(socket: StarfallSocket, text: string): ChatMessage {
+  const playerId = socket.data.playerId;
+  return {
+    id: `chat-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    author: socket.data.playerName ?? "Anonymous",
+    role: playerId ?? "spectator",
+    text: text.slice(0, 280),
+    createdAt: Date.now()
+  };
+}
+
+function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
+  if (previousRoom.phase === "finished" || resolvedRoom.phase !== "finished" || !resolvedRoom.winner) {
+    return;
+  }
+
+  const loser = resolvedRoom.winner === "captainA" ? "captainB" : "captainA";
+  const game: RecentGame = {
+    id: `game-${resolvedRoom.code}-${Date.now()}`,
+    roomCode: resolvedRoom.code,
+    winnerName: resolvedRoom.players[resolvedRoom.winner]?.name ?? labelForPlayer(resolvedRoom.winner),
+    loserName: resolvedRoom.players[loser]?.name ?? labelForPlayer(loser),
+    rounds: resolvedRoom.turn,
+    completedAt: Date.now()
+  };
+
+  recentGames.unshift(game);
+  recentGames.splice(8);
+  io.emit("recentGames", recentGames);
+}
+
+function labelForPlayer(playerId: PlayerId): string {
+  return playerId === "captainA" ? "Captain A" : "Captain B";
 }
 
 function storePushSubscription(
