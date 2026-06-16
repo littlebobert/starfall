@@ -393,11 +393,13 @@ export default function App() {
       <header className="hero">
         <p className="eyebrow">{workSafeMode ? "Operations Review" : "Starfall Commander"}</p>
         <h1>{workSafeMode ? "Room activity dashboard" : "Turn-based tactical starship combat"}</h1>
-        <p>
-          {workSafeMode
-            ? "Create or join a room, coordinate actions, and review recent outcomes."
-            : "Create a room, send the code to another captain, and fight by disabling reactors, weapons, shields, engines, sensors, and life support."}
-        </p>
+        {!room ? (
+          <p>
+            {workSafeMode
+              ? "Create or join a room, coordinate actions, and review recent outcomes."
+              : "Create a room, send the code to another captain, and fight by disabling reactors, weapons, shields, engines, sensors, and life support."}
+          </p>
+        ) : null}
         <button type="button" className="secondary mode-toggle" onClick={toggleWorkSafeMode}>
           {workSafeMode ? "Game view" : "Work-safe view"}
         </button>
@@ -619,7 +621,7 @@ function NotificationControl({
   }
 
   if (status === "enabled") {
-    return <span className="notification-status enabled">Turn notifications on</span>;
+    return <span className="notification-status enabled">Notifications enabled</span>;
   }
 
   if (status === "syncing") {

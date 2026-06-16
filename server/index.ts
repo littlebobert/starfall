@@ -357,6 +357,7 @@ io.on("connection", (socket) => {
     room.chat = [...room.chat, message].slice(-50);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
+    await notifyChatMessage(room, socket, message);
   });
 
   socket.on(
@@ -603,6 +604,26 @@ function storePushSubscription(
   playerSubscriptions.set(subscription.endpoint, subscription);
   roomSubscriptions.set(playerId, playerSubscriptions);
   pushSubscriptions.set(roomCode, roomSubscriptions);
+}
+
+async function notifyChatMessage(room: RoomState, sender: StarfallSocket, message: ChatMessage) {
+  const recipients = PLAYER_IDS.filter((playerId) => {
+    if (sender.data.playerId === playerId) {
+      return false;
+    }
+
+    return room.players[playerId]?.connected;
+  });
+
+  if (recipients.length === 0) {
+    return;
+  }
+
+  await notifyPlayers(room, recipients, {
+    title: `Comms in room ${room.code}`,
+    body: `${message.author}: ${message.text}`,
+    tag: `starfall-${room.code}-chat-${message.id}`
+  });
 }
 
 async function notifyTurnResult(room: RoomState) {
