@@ -6,16 +6,21 @@ import { fileURLToPath } from "node:url";
 import { Server, Socket } from "socket.io";
 import webpush from "web-push";
 import {
+  canRematch,
   canStartCombat,
   ChatMessage,
   ClientRoomState,
   CombatCommand,
   createRoom,
+  DEFAULT_SHIP_CLASS_ID,
+  isShipClassId,
   PlayerId,
   PLAYER_IDS,
   RecentGame,
+  rematchCombat,
   resolvePlayerTurn,
   RoomState,
+  selectShipClass,
   serializeRoom,
   startCombat
 } from "../shared/game";
@@ -37,6 +42,10 @@ interface JoinRoomPayload {
 
 interface RoomPayload {
   roomCode?: string;
+}
+
+interface SelectShipClassPayload extends RoomPayload {
+  shipClassId?: string;
 }
 
 interface SubmitCommandPayload extends RoomPayload {
@@ -62,6 +71,8 @@ interface ClientToServerEvents {
   createRoom: (payload: CreateRoomPayload, ack?: (response: ClientAck) => void) => void;
   joinRoom: (payload: JoinRoomPayload, ack?: (response: ClientAck) => void) => void;
   startGame: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
+  rematch: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
+  selectShipClass: (payload: SelectShipClassPayload, ack?: (response: ClientAck) => void) => void;
   submitCommand: (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => void;
   sendChat: (payload: SendChatPayload, ack?: (response: ClientAck) => void) => void;
   savePushSubscription: (
@@ -161,7 +172,8 @@ io.on("connection", (socket) => {
     room.players.captainA = {
       id: "captainA",
       name: playerName,
-      connected: true
+      connected: true,
+      shipClassId: DEFAULT_SHIP_CLASS_ID
     };
     room.log.push(`${playerName} took command of Captain A.`);
     rooms.set(roomCode, room);
@@ -189,7 +201,8 @@ io.on("connection", (socket) => {
       room.players[playerId] = {
         id: playerId,
         name: playerName,
-        connected: true
+        connected: true,
+        shipClassId: room.players[playerId]?.shipClassId ?? DEFAULT_SHIP_CLASS_ID
       };
       room.log.push(`${playerName} joined as ${playerId === "captainA" ? "Captain A" : "Captain B"}.`);
 
@@ -237,6 +250,65 @@ io.on("connection", (socket) => {
     await notifyActivePlayer(startedRoom, {
       title: "Your turn",
       body: `Combat started in room ${room.code}. Choose the opening action.`
+    });
+  });
+
+  socket.on("selectShipClass", async (payload: SelectShipClassPayload, ack?: (response: ClientAck) => void) => {
+    const room = getSocketRoom(socket, payload.roomCode);
+    const playerId = socket.data.playerId;
+    const shipClassId = payload.shipClassId?.trim();
+
+    if (!room || !playerId) {
+      ack?.({ ok: false, error: "Join a room before selecting a ship." });
+      return;
+    }
+
+    if (room.phase !== "lobby") {
+      ack?.({ ok: false, error: "Ships can only be changed before combat begins." });
+      return;
+    }
+
+    if (!shipClassId || !isShipClassId(shipClassId)) {
+      ack?.({ ok: false, error: "Choose a valid ship class." });
+      return;
+    }
+
+    const updatedRoom = selectShipClass(room, playerId, shipClassId);
+    rooms.set(room.code, updatedRoom);
+    ack?.({ ok: true, roomCode: room.code });
+    await emitRoom(room.code);
+  });
+
+  socket.on("rematch", async (payload: RoomPayload, ack?: (response: ClientAck) => void) => {
+    const room = getSocketRoom(socket, payload.roomCode);
+
+    if (!room) {
+      ack?.({ ok: false, error: "Join a room before starting a rematch." });
+      return;
+    }
+
+    if (!socket.data.playerId) {
+      ack?.({ ok: false, error: "Spectators cannot start a rematch." });
+      return;
+    }
+
+    if (room.phase !== "finished") {
+      ack?.({ ok: false, error: "The battle is still in progress." });
+      return;
+    }
+
+    if (!canRematch(room)) {
+      ack?.({ ok: false, error: "Both connected captains are required for a rematch." });
+      return;
+    }
+
+    const rematchedRoom = rematchCombat(room);
+    rooms.set(room.code, rematchedRoom);
+    ack?.({ ok: true, roomCode: room.code });
+    await emitRoom(room.code);
+    await notifyActivePlayer(rematchedRoom, {
+      title: "Rematch started",
+      body: `A new battle begins in room ${room.code}. Choose the opening action.`
     });
   });
 

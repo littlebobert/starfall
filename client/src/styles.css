@@ -162,6 +162,11 @@ p {
   gap: 1rem;
 }
 
+.ship-heading-stats {
+  display: flex;
+  gap: 0.75rem;
+}
+
 .room-header h2 {
   margin-bottom: 0;
   font-size: 2.2rem;
@@ -266,10 +271,10 @@ p {
   grid-template-columns: 0.9fr 1fr 1fr 1fr 0.9fr;
   grid-template-rows: repeat(3, minmax(58px, 1fr));
   gap: 0.35rem;
-  overflow: hidden;
+  overflow: visible;
   border: 1px solid rgba(125, 211, 252, 0.2);
   border-radius: 1.4rem 2.4rem 2.4rem 1.4rem;
-  padding: 1.1rem 1.35rem;
+  padding: 1.1rem 2rem 1.1rem 2.6rem;
   background:
     linear-gradient(90deg, rgba(15, 23, 42, 0.96), rgba(30, 41, 59, 0.78)),
     radial-gradient(circle at 82% 50%, rgba(125, 211, 252, 0.16), transparent 16rem);
@@ -277,6 +282,7 @@ p {
 
 .enemy-map {
   border-radius: 2.4rem 1.4rem 1.4rem 2.4rem;
+  padding: 1.1rem 2.6rem 1.1rem 2rem;
   background:
     linear-gradient(270deg, rgba(15, 23, 42, 0.96), rgba(49, 46, 129, 0.58)),
     radial-gradient(circle at 18% 50%, rgba(248, 113, 113, 0.15), transparent 16rem);
@@ -293,7 +299,7 @@ p {
 }
 
 .ship-nose {
-  right: -1.9rem;
+  right: 0.15rem;
   border-radius: 999px 0 0 999px;
   border: 1px solid rgba(148, 163, 184, 0.16);
   background: rgba(148, 163, 184, 0.08);
@@ -301,18 +307,18 @@ p {
 
 .enemy-map .ship-nose {
   right: auto;
-  left: -1.9rem;
+  left: 0.15rem;
   border-radius: 0 999px 999px 0;
 }
 
 .ship-engine-glow {
-  left: -2.3rem;
+  left: 0.15rem;
   border-radius: 999px;
   background: radial-gradient(circle, rgba(251, 146, 60, 0.68), transparent 62%);
 }
 
 .enemy-map .ship-engine-glow {
-  right: -2.3rem;
+  right: 0.15rem;
   left: auto;
 }
 
@@ -335,8 +341,10 @@ p {
 
 .ship-room:hover:not([aria-disabled="true"]),
 .ship-room.selected {
-  outline: 2px solid rgba(196, 181, 253, 0.78);
-  outline-offset: 2px;
+  border-color: rgba(196, 181, 253, 0.78);
+  box-shadow:
+    inset 0 0 0 1px rgba(15, 23, 42, 0.72),
+    0 0 0 2px rgba(196, 181, 253, 0.78);
   transform: translateY(-1px);
 }
 
@@ -370,6 +378,22 @@ p {
   color: #cbd5e1;
   font-size: 0.7rem;
   font-weight: 800;
+}
+
+.crew-pips {
+  position: absolute;
+  top: 0.35rem;
+  right: 0.35rem;
+  display: inline-flex;
+  gap: 0.15rem;
+}
+
+.crew-pip {
+  width: 0.38rem;
+  height: 0.38rem;
+  border-radius: 999px;
+  background: #fcd34d;
+  box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.72);
 }
 
 .map-hint {
@@ -476,10 +500,20 @@ p {
 }
 
 .victory {
+  display: grid;
+  gap: 0.75rem;
   border: 1px solid rgba(125, 211, 252, 0.32);
   border-radius: 1rem;
   padding: 1rem;
   background: rgba(14, 116, 144, 0.18);
+}
+
+.victory h3 {
+  margin: 0;
+}
+
+.victory p {
+  margin: 0;
 }
 
 .battle-log ol {
@@ -496,6 +530,68 @@ p {
 .battle-log li {
   border-left: 2px solid rgba(125, 211, 252, 0.28);
   padding-left: 0.7rem;
+}
+
+.battle-log li.critical {
+  border-left-color: rgba(251, 146, 60, 0.88);
+  color: #fde68a;
+}
+
+.command-help-crit {
+  color: #fcd34d;
+  font-weight: 800;
+}
+
+.crew-assignment-editor {
+  display: grid;
+  gap: 0.45rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.9rem;
+  padding: 0.7rem;
+  background: rgba(15, 23, 42, 0.48);
+}
+
+.crew-assignment-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.crew-assignment-header strong {
+  color: #f8fafc;
+  font-size: 0.82rem;
+}
+
+.crew-assignment-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.75rem;
+  align-items: center;
+}
+
+.crew-assignment-row > span {
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 800;
+}
+
+.crew-assignment-controls {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.crew-assignment-controls strong {
+  min-width: 1rem;
+  color: #f8fafc;
+  text-align: center;
+  font-size: 0.82rem;
+}
+
+button.crew-stepper {
+  min-height: 1.8rem;
+  padding: 0.2rem 0.55rem;
 }
 
 .chat-panel {
@@ -561,7 +657,7 @@ p {
   color: #1f2937;
 }
 
-.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list) {
+.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card) {
   border-color: #d1d5db;
   color: #1f2937;
   background: #ffffff;
@@ -574,6 +670,15 @@ p {
 
 .work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span) {
   color: #6b7280;
+}
+
+.work-safe .battle-log li.critical {
+  border-left-color: #d97706;
+  color: #92400e;
+}
+
+.work-safe .command-help-crit {
+  color: #b45309;
 }
 
 .work-safe :is(h1, h2, h3, strong, .ship-stat strong, .spectator-list strong) {
@@ -615,6 +720,74 @@ p {
 .lobby {
   display: grid;
   gap: 1rem;
+}
+
+.ship-class-picker {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.ship-class-grid {
+  display: grid;
+  gap: 0.65rem;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.ship-class-card {
+  display: grid;
+  gap: 0.35rem;
+  border: 1px solid rgba(148, 163, 184, 0.18);
+  border-radius: 1rem;
+  padding: 0.85rem;
+  background: rgba(15, 23, 42, 0.58);
+  text-align: left;
+}
+
+button.ship-class-card {
+  cursor: pointer;
+  color: inherit;
+  font: inherit;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+button.ship-class-card:hover:not(.selected) {
+  transform: translateY(-1px);
+  border-color: rgba(125, 211, 252, 0.42);
+}
+
+.ship-class-card.selected {
+  border-color: rgba(196, 181, 253, 0.78);
+  box-shadow: 0 0 0 1px rgba(196, 181, 253, 0.32);
+}
+
+.ship-class-card.readonly {
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.ship-class-card strong {
+  color: #f8fafc;
+  font-size: 0.95rem;
+}
+
+.ship-class-card p {
+  margin: 0;
+  color: #cbd5e1;
+  font-size: 0.78rem;
+}
+
+.ship-class-card small,
+.ship-class-card span {
+  color: #94a3b8;
+  font-size: 0.68rem;
+}
+
+.ship-class-card span {
+  color: #93c5fd;
+  font-weight: 900;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
 .seat-grid {
@@ -816,7 +989,11 @@ p {
     grid-template-columns: repeat(3, minmax(0, 1fr));
     grid-template-rows: repeat(2, minmax(52px, 1fr));
     gap: 0.25rem;
-    padding: 0.75rem 0.9rem;
+    padding: 0.75rem 1.75rem 0.75rem 2.2rem;
+  }
+
+  .enemy-map {
+    padding: 0.75rem 2.2rem 0.75rem 1.75rem;
   }
 
   .ship-room {
@@ -980,6 +1157,10 @@ p {
   }
 
   .system-row {
+    grid-template-columns: 1fr;
+  }
+
+  .ship-class-grid {
     grid-template-columns: 1fr;
   }
 

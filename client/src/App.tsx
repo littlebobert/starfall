@@ -4,11 +4,23 @@ import { io, Socket } from "socket.io-client";
 import {
   ClientRoomState,
   CombatCommand,
+  CRITICAL_STRIKE_LOG_MARKER,
+  crewAssignmentsEqual,
+  DEFAULT_SHIP_CLASS_ID,
   DivertTarget,
+  formatShipClassSummary,
+  getCriticalStrikeChance,
+  getAssignedCrewCount,
+  getCrewAtStation,
+  getShipClass,
+  MAX_CREW_PER_STATION,
   PLAYER_IDS,
   PlayerId,
   RecentGame,
+  sanitizeCrewAssignments,
   Ship,
+  SHIP_CLASSES,
+  ShipClassId,
   SYSTEM_DEFINITIONS,
   SystemId
 } from "../../shared/game";
@@ -30,6 +42,11 @@ interface ClientToServerEvents {
   createRoom: (payload: { playerName: string }, ack: (response: Ack) => void) => void;
   joinRoom: (payload: { roomCode: string; playerName: string }, ack: (response: Ack) => void) => void;
   startGame: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
+  rematch: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
+  selectShipClass: (
+    payload: { roomCode: string; shipClassId: ShipClassId },
+    ack: (response: Ack) => void
+  ) => void;
   submitCommand: (
     payload: { roomCode: string; command: CombatCommand },
     ack: (response: Ack) => void
@@ -80,6 +97,15 @@ export default function App() {
   const [targetSystem, setTargetSystem] = useState<SystemId>("reactor");
   const [repairSystem, setRepairSystem] = useState<SystemId>("reactor");
   const [divertTarget, setDivertTarget] = useState<DivertTarget>("shields");
+  const [crewAssignmentsDraft, setCrewAssignmentsDraft] = useState<Record<SystemId, number>>(() =>
+    SYSTEM_DEFINITIONS.reduce(
+      (assignments, system) => {
+        assignments[system.id] = 0;
+        return assignments;
+      },
+      {} as Record<SystemId, number>
+    )
+  );
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>(getInitialNotificationStatus);
   const [notificationError, setNotificationError] = useState<string>();
   const lastSyncedNotificationKey = useRef<string | undefined>(undefined);
@@ -181,6 +207,20 @@ export default function App() {
   const opponent = you ? (you === "captainA" ? "captainB" : "captainA") : undefined;
   const isSpectator = Boolean(room?.spectatorId && !you);
   const isYourTurn = Boolean(room?.phase === "combat" && you && room.activePlayer === you);
+  const yourShip = you ? room?.ships[you] : undefined;
+  const redeployReady = Boolean(
+    yourShip &&
+      sanitizeCrewAssignments(yourShip, crewAssignmentsDraft) &&
+      !crewAssignmentsEqual(crewAssignmentsDraft, yourShip.crewAssignments)
+  );
+
+  useEffect(() => {
+    if (!room || !you || room.activePlayer !== you || !room.ships[you]) {
+      return;
+    }
+
+    setCrewAssignmentsDraft({ ...room.ships[you].crewAssignments });
+  }, [room?.turn, room?.activePlayer, you, room]);
 
   function rememberName() {
     const normalizedName = playerName.trim() || "Captain";
@@ -219,6 +259,22 @@ export default function App() {
     socket.emit("startGame", { roomCode: room.code }, handleAck);
   }
 
+  function rematch() {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit("rematch", { roomCode: room.code }, handleAck);
+  }
+
+  function selectShipClass(shipClassId: ShipClassId) {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit("selectShipClass", { roomCode: room.code, shipClassId }, handleAck);
+  }
+
   function submitCommand() {
     if (!room || !isYourTurn) {
       return;
@@ -237,7 +293,9 @@ export default function App() {
                 ? { type: "evasive" }
                 : commandType === "patch"
                   ? { type: "patch" }
-                  : { type: "brace" };
+                  : commandType === "redeploy"
+                    ? { type: "redeploy", crewAssignments: crewAssignmentsDraft }
+                    : { type: "brace" };
 
     socket.emit("submitCommand", { roomCode: room.code, command }, handleAck);
   }
@@ -400,7 +458,7 @@ export default function App() {
           />
 
           {room.phase === "lobby" ? (
-            <Lobby room={room} onStart={startGame} />
+            <Lobby room={room} onStart={startGame} onSelectShipClass={selectShipClass} />
           ) : (
             <section className="combat-grid">
               <div className="ship-column">
@@ -448,7 +506,7 @@ export default function App() {
               <aside className="panel command-panel">
                 <h2>Turn {room.turn}</h2>
                 {room.phase === "finished" ? (
-                  <VictoryBanner room={room} />
+                  <VictoryBanner room={room} onRematch={rematch} />
                 ) : isSpectator ? (
                   <SpectatorPanel room={room} />
                 ) : (
@@ -467,9 +525,15 @@ export default function App() {
                       setRepairSystem={setRepairSystem}
                       divertTarget={divertTarget}
                       setDivertTarget={setDivertTarget}
+                      crewAssignments={crewAssignmentsDraft}
+                      setCrewAssignments={setCrewAssignmentsDraft}
+                      yourShip={yourShip}
                       disabled={!isYourTurn}
                     />
-                    <button onClick={submitCommand} disabled={!isYourTurn}>
+                    <button
+                      onClick={submitCommand}
+                      disabled={!isYourTurn || (commandType === "redeploy" && !redeployReady)}
+                    >
                       {isYourTurn ? "Take action" : "Waiting"}
                     </button>
                   </>
@@ -592,7 +656,15 @@ function RecentGames({ games }: { games: RecentGame[] }) {
   );
 }
 
-function Lobby({ room, onStart }: { room: ClientRoomState; onStart: () => void }) {
+function Lobby({
+  room,
+  onStart,
+  onSelectShipClass
+}: {
+  room: ClientRoomState;
+  onStart: () => void;
+  onSelectShipClass: (shipClassId: ShipClassId) => void;
+}) {
   const hasTwoPlayers = PLAYER_IDS.every((id) => room.players[id]?.connected);
   const canStart = hasTwoPlayers && Boolean(room.you);
 
@@ -600,17 +672,74 @@ function Lobby({ room, onStart }: { room: ClientRoomState; onStart: () => void }
     <section className="panel lobby">
       <div>
         <h2>Awaiting Captains</h2>
-        <p className="muted">Both seats must be connected before combat can begin.</p>
+        <p className="muted">Pick your ship, then start once both captains are connected.</p>
       </div>
       <div className="seat-grid">
         {PLAYER_IDS.map((playerId) => (
           <PlayerSeat key={playerId} room={room} playerId={playerId} />
         ))}
       </div>
+
+      {room.you ? (
+        <ShipClassPicker
+          selectedClassId={room.players[room.you]?.shipClassId ?? DEFAULT_SHIP_CLASS_ID}
+          onSelect={onSelectShipClass}
+        />
+      ) : (
+        <div className="ship-class-grid">
+          {PLAYER_IDS.map((playerId) => {
+            const player = room.players[playerId];
+            const classId = player?.shipClassId ?? DEFAULT_SHIP_CLASS_ID;
+            const shipClass = getShipClass(classId);
+
+            return (
+              <div key={playerId} className="ship-class-card readonly">
+                <span>{playerId === "captainA" ? "Captain A" : "Captain B"}</span>
+                <strong>{player?.name ?? "Open seat"}</strong>
+                <p>{shipClass.name}</p>
+                <small>{formatShipClassSummary(classId)}</small>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
       <button onClick={onStart} disabled={!canStart}>
         {canStart ? "Start combat" : hasTwoPlayers ? "Spectators cannot start combat" : "Waiting for second captain"}
       </button>
     </section>
+  );
+}
+
+function ShipClassPicker({
+  selectedClassId,
+  onSelect
+}: {
+  selectedClassId: ShipClassId;
+  onSelect: (shipClassId: ShipClassId) => void;
+}) {
+  return (
+    <div className="ship-class-picker">
+      <p className="eyebrow">Choose your ship</p>
+      <div className="ship-class-grid">
+        {SHIP_CLASSES.map((shipClass) => {
+          const isSelected = shipClass.id === selectedClassId;
+
+          return (
+            <button
+              key={shipClass.id}
+              type="button"
+              className={isSelected ? "ship-class-card selected" : "ship-class-card"}
+              onClick={() => onSelect(shipClass.id)}
+            >
+              <strong>{shipClass.name}</strong>
+              <p>{shipClass.tagline}</p>
+              <small>{formatShipClassSummary(shipClass.id)}</small>
+            </button>
+          );
+        })}
+      </div>
+    </div>
   );
 }
 
@@ -627,10 +756,13 @@ function SpectatorPanel({ room }: { room: ClientRoomState }) {
 
 function PlayerSeat({ room, playerId }: { room: ClientRoomState; playerId: PlayerId }) {
   const player = room.players[playerId];
+  const shipClass = getShipClass(player?.shipClassId ?? DEFAULT_SHIP_CLASS_ID);
+
   return (
     <div className="seat">
       <span>{playerId === "captainA" ? "Captain A" : "Captain B"}</span>
       <strong>{player?.name ?? "Open seat"}</strong>
+      <p className="muted">{player ? shipClass.name : "Waiting for captain"}</p>
       <small className={player?.connected ? "online-text" : "muted"}>
         {player?.connected ? "Connected" : player ? "Disconnected" : "Waiting"}
       </small>
@@ -669,13 +801,22 @@ function ShipPanel({
         <div>
           <p className="eyebrow">{title}</p>
           <h2>{ship.name}</h2>
+          <p className="muted">{getShipClass(ship.classId).tagline}</p>
           <p className="muted">{room.players[playerId]?.name ?? "Unknown captain"}</p>
         </div>
-        <div className="ship-stat">
-          <span>Hull</span>
-          <strong>
-            {ship.hull}/{ship.maxHull}
-          </strong>
+        <div className="ship-heading-stats">
+          <div className="ship-stat">
+            <span>Crew</span>
+            <strong>
+              {getAssignedCrewCount(ship)}/{ship.crewTotal}
+            </strong>
+          </div>
+          <div className="ship-stat">
+            <span>Hull</span>
+            <strong>
+              {ship.hull}/{ship.maxHull}
+            </strong>
+          </div>
         </div>
       </div>
 
@@ -722,6 +863,7 @@ function ShipMap({
         const integrity = Math.round((system.hp / system.maxHp) * 100);
         const isSelected = selectedSystem === systemId;
         const isInteractive = Boolean(onSelectSystem);
+        const crewCount = getCrewAtStation(ship, systemId);
 
         return (
           <button
@@ -736,6 +878,13 @@ function ShipMap({
             }}
             aria-disabled={!isInteractive}
           >
+            {crewCount > 0 ? (
+              <span className="crew-pips" aria-label={`${crewCount} crew stationed here`}>
+                {Array.from({ length: crewCount }, (_, index) => (
+                  <span key={index} className="crew-pip" />
+                ))}
+              </span>
+            ) : null}
             <span>{visual.icon}</span>
             <strong>{system.name}</strong>
             <small>
@@ -796,6 +945,9 @@ function CommandControls({
   setRepairSystem,
   divertTarget,
   setDivertTarget,
+  crewAssignments,
+  setCrewAssignments,
+  yourShip,
   disabled
 }: {
   commandType: CombatCommand["type"];
@@ -806,8 +958,38 @@ function CommandControls({
   setRepairSystem: (value: SystemId) => void;
   divertTarget: DivertTarget;
   setDivertTarget: (value: DivertTarget) => void;
+  crewAssignments: Record<SystemId, number>;
+  setCrewAssignments: (value: Record<SystemId, number>) => void;
+  yourShip?: Ship;
   disabled: boolean;
 }) {
+  const assignedCrew = SYSTEM_DEFINITIONS.reduce(
+    (total, system) => total + (crewAssignments[system.id] ?? 0),
+    0
+  );
+
+  function adjustCrewAssignment(systemId: SystemId, delta: number) {
+    if (!yourShip) {
+      return;
+    }
+
+    const current = crewAssignments[systemId] ?? 0;
+    const next = current + delta;
+
+    if (next < 0 || next > MAX_CREW_PER_STATION) {
+      return;
+    }
+
+    if (delta > 0 && assignedCrew >= yourShip.crewTotal) {
+      return;
+    }
+
+    setCrewAssignments({
+      ...crewAssignments,
+      [systemId]: next
+    });
+  }
+
   return (
     <div className="stack">
       <label>
@@ -819,6 +1001,7 @@ function CommandControls({
         >
           <option value="fire">Fire on a system</option>
           <option value="repair">Repair a system</option>
+          <option value="redeploy">Redeploy crew</option>
           <option value="brace">Brace shields</option>
           <option value="divert">Divert reactor power</option>
           <option value="jam">Jam enemy sensors</option>
@@ -836,6 +1019,19 @@ function CommandControls({
         />
       ) : null}
 
+      {commandType === "fire" && yourShip ? (
+        <p className="command-help command-help-crit">
+          Critical strike chance: {getCriticalStrikeChance(yourShip)}%
+        </p>
+      ) : null}
+
+      {commandType === "fire" ? (
+        <p className="command-help">
+          Accurate weapons fire can land a critical strike for +3 hull and +2 system damage. Sensors raise crit
+          chance; healthy weapons add a little more.
+        </p>
+      ) : null}
+
       {commandType === "repair" ? (
         <SystemSelect
           label="Repair your system"
@@ -843,6 +1039,22 @@ function CommandControls({
           onChange={setRepairSystem}
           disabled={disabled}
         />
+      ) : null}
+
+      {commandType === "redeploy" && yourShip ? (
+        <CrewAssignmentEditor
+          ship={yourShip}
+          assignments={crewAssignments}
+          assignedCrew={assignedCrew}
+          onAdjust={adjustCrewAssignment}
+          disabled={disabled}
+        />
+      ) : null}
+
+      {commandType === "redeploy" ? (
+        <p className="command-help">
+          Reassign crew between stations. Uses your turn. Crew still performs upkeep before the redeploy resolves.
+        </p>
       ) : null}
 
       {commandType === "divert" ? (
@@ -881,6 +1093,59 @@ function CommandControls({
   );
 }
 
+function CrewAssignmentEditor({
+  ship,
+  assignments,
+  assignedCrew,
+  onAdjust,
+  disabled
+}: {
+  ship: Ship;
+  assignments: Record<SystemId, number>;
+  assignedCrew: number;
+  onAdjust: (systemId: SystemId, delta: number) => void;
+  disabled: boolean;
+}) {
+  return (
+    <div className="crew-assignment-editor">
+      <div className="crew-assignment-header">
+        <span className="eyebrow">Crew stations</span>
+        <strong>
+          {assignedCrew}/{ship.crewTotal}
+        </strong>
+      </div>
+      {SYSTEM_DEFINITIONS.map((system) => {
+        const count = assignments[system.id] ?? 0;
+
+        return (
+          <div key={system.id} className="crew-assignment-row">
+            <span>{system.name}</span>
+            <div className="crew-assignment-controls">
+              <button
+                type="button"
+                className="secondary crew-stepper"
+                disabled={disabled || count <= 0}
+                onClick={() => onAdjust(system.id, -1)}
+              >
+                -
+              </button>
+              <strong>{count}</strong>
+              <button
+                type="button"
+                className="secondary crew-stepper"
+                disabled={disabled || assignedCrew >= ship.crewTotal || count >= MAX_CREW_PER_STATION}
+                onClick={() => onAdjust(system.id, 1)}
+              >
+                +
+              </button>
+            </div>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 function SystemSelect({
   label,
   value,
@@ -907,29 +1172,47 @@ function SystemSelect({
 }
 
 function TurnStatus({ room }: { room: ClientRoomState }) {
-  const activePlayerName = room.activePlayer
-    ? room.players[room.activePlayer]?.name ?? (room.activePlayer === "captainA" ? "Captain A" : "Captain B")
-    : undefined;
-
   return (
     <div className="ready-grid">
-      {PLAYER_IDS.map((playerId) => (
-        <div key={playerId} className={room.activePlayer === playerId ? "ready-pill ready" : "ready-pill"}>
-          {playerId === "captainA" ? "Captain A" : "Captain B"}:{" "}
-          {room.phase === "finished"
-            ? "Done"
-            : room.activePlayer === playerId
-              ? `Acting${activePlayerName ? ` (${activePlayerName})` : ""}`
-              : "Waiting"}
-        </div>
-      ))}
+      {PLAYER_IDS.map((playerId) => {
+        const playerName =
+          room.players[playerId]?.name ?? (playerId === "captainA" ? "Captain A" : "Captain B");
+
+        return (
+          <div key={playerId} className={room.activePlayer === playerId ? "ready-pill ready" : "ready-pill"}>
+            {playerName}:{" "}
+            {room.phase === "finished"
+              ? "Done"
+              : room.activePlayer === playerId
+                ? "Acting"
+                : "Waiting"}
+          </div>
+        );
+      })}
     </div>
   );
 }
 
-function VictoryBanner({ room }: { room: ClientRoomState }) {
+function VictoryBanner({
+  room,
+  onRematch
+}: {
+  room: ClientRoomState;
+  onRematch: () => void;
+}) {
   if (!room.winner) {
-    return <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>;
+    return (
+      <div className="victory">
+        <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>
+        {room.you ? (
+          <button type="button" onClick={onRematch}>
+            Play again
+          </button>
+        ) : (
+          <p className="muted">Waiting for a captain to start a rematch.</p>
+        )}
+      </div>
+    );
   }
 
   const winnerName = room.players[room.winner]?.name ?? room.winner;
@@ -939,6 +1222,13 @@ function VictoryBanner({ room }: { room: ClientRoomState }) {
     <div className="victory">
       <h3>{isYou ? "Victory" : "Defeat"}</h3>
       <p>{winnerName} controls the field. The losing ship can be salvaged, ransomed, or stripped later.</p>
+      {room.you ? (
+        <button type="button" onClick={onRematch}>
+          Play again
+        </button>
+      ) : (
+        <p className="muted">Waiting for a captain to start a rematch.</p>
+      )}
     </div>
   );
 }
@@ -952,7 +1242,9 @@ function BattleLog({ entries }: { entries: string[] }) {
           .slice()
           .reverse()
           .map((entry, index) => (
-            <li key={`${entry}-${index}`}>{entry}</li>
+            <li key={`${entry}-${index}`} className={entry.includes(CRITICAL_STRIKE_LOG_MARKER) ? "critical" : undefined}>
+              {entry}
+            </li>
           ))}
       </ol>
     </section>

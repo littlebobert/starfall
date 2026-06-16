@@ -6,14 +6,38 @@ self.addEventListener("push", (event) => {
     url: "/"
   };
   const data = event.data ? event.data.json() : fallback;
+  const targetUrl = data.url || fallback.url;
+  const roomCode = new URL(targetUrl, self.location.origin).searchParams.get("room");
 
   event.waitUntil(
-    self.registration.showNotification(data.title || fallback.title, {
-      body: data.body || fallback.body,
-      tag: data.tag || fallback.tag,
-      data: {
-        url: data.url || fallback.url
+    self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
+      const hasVisibleGameClient = clients.some((client) => {
+        if (client.visibilityState !== "visible") {
+          return false;
+        }
+
+        if (!roomCode) {
+          return true;
+        }
+
+        try {
+          return new URL(client.url).searchParams.get("room")?.toUpperCase() === roomCode.toUpperCase();
+        } catch {
+          return false;
+        }
+      });
+
+      if (hasVisibleGameClient) {
+        return;
       }
+
+      return self.registration.showNotification(data.title || fallback.title, {
+        body: data.body || fallback.body,
+        tag: data.tag || fallback.tag,
+        data: {
+          url: targetUrl
+        }
+      });
     })
   );
 });
