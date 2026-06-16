@@ -10,7 +10,7 @@ export type SystemId =
   | "sensors"
   | "lifeSupport";
 
-export type CommandType = "fire" | "repair" | "brace" | "divert";
+export type CommandType = "fire" | "repair" | "brace" | "divert" | "jam" | "evasive" | "patch";
 
 export type DivertTarget = "shields" | "engines" | "weapons";
 
@@ -243,6 +243,24 @@ export function normalizeCommand(command: CombatCommand): CombatCommand {
     };
   }
 
+  if (command.type === "jam") {
+    return {
+      type: "jam"
+    };
+  }
+
+  if (command.type === "evasive") {
+    return {
+      type: "evasive"
+    };
+  }
+
+  if (command.type === "patch") {
+    return {
+      type: "patch"
+    };
+  }
+
   return DEFAULT_COMMAND;
 }
 
@@ -266,6 +284,10 @@ export function resolveTurn(room: RoomState): RoomState {
 
   for (const playerId of PLAYER_IDS) {
     applyPreparationCommand(playerId, ships[playerId], commands[playerId], entries);
+  }
+
+  for (const playerId of PLAYER_IDS) {
+    applyElectronicCommand(playerId, ships[playerId], ships[getOpponent(playerId)], commands[playerId], entries);
   }
 
   for (const playerId of PLAYER_IDS) {
@@ -329,7 +351,56 @@ function applyPreparationCommand(
 
   if (command.type === "divert") {
     applyDivert(playerId, ship, command.divertTarget ?? "shields", entries);
+    return;
   }
+
+  if (command.type === "evasive") {
+    const previousEngines = ship.systems.engines.hp;
+    ship.systems.engines.hp = clamp(ship.systems.engines.hp + 1, 0, ship.systems.engines.maxHp);
+    ship.shield = clamp(ship.shield + 1, 0, ship.maxShield);
+    entries.push(
+      `${labelFor(playerId)} takes evasive maneuvers, tuning engines from ${previousEngines}/${ship.systems.engines.maxHp} to ${ship.systems.engines.hp}/${ship.systems.engines.maxHp} and adding 1 shield.`
+    );
+    return;
+  }
+
+  if (command.type === "patch") {
+    const previousHull = ship.hull;
+    const reactorOnline = isSystemOnline(ship, "reactor");
+    const patchAmount = reactorOnline ? 3 : 1;
+    ship.hull = clamp(ship.hull + patchAmount, 0, ship.maxHull);
+    entries.push(
+      `${labelFor(playerId)} patches hull plating from ${previousHull}/${ship.maxHull} to ${ship.hull}/${ship.maxHull}.`
+    );
+  }
+}
+
+function applyElectronicCommand(
+  playerId: PlayerId,
+  attacker: Ship,
+  defender: Ship,
+  command: CombatCommand,
+  entries: string[]
+) {
+  if (command.type !== "jam") {
+    return;
+  }
+
+  if (!isSystemOnline(attacker, "sensors")) {
+    entries.push(`${labelFor(playerId)} tries to jam enemy sensors, but their own sensors are offline.`);
+    return;
+  }
+
+  const previousSensors = defender.systems.sensors.hp;
+  const jamDamage = integrityPercent(attacker, "sensors") >= 0.75 ? 2 : 1;
+  defender.systems.sensors.hp = clamp(
+    defender.systems.sensors.hp - jamDamage,
+    0,
+    defender.systems.sensors.maxHp
+  );
+  entries.push(
+    `${labelFor(playerId)} jams enemy sensors (${previousSensors}/${defender.systems.sensors.maxHp} -> ${defender.systems.sensors.hp}/${defender.systems.sensors.maxHp}).`
+  );
 }
 
 function applyDivert(

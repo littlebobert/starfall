@@ -231,7 +231,13 @@ export default function App() {
           ? { type: "repair", repairSystem }
           : commandType === "divert"
             ? { type: "divert", divertTarget }
-            : { type: "brace" };
+            : commandType === "jam"
+              ? { type: "jam" }
+              : commandType === "evasive"
+                ? { type: "evasive" }
+                : commandType === "patch"
+                  ? { type: "patch" }
+                  : { type: "brace" };
 
     socket.emit("submitCommand", { roomCode: room.code, command }, handleAck);
   }
@@ -815,6 +821,9 @@ function CommandControls({
           <option value="repair">Repair a system</option>
           <option value="brace">Brace shields</option>
           <option value="divert">Divert reactor power</option>
+          <option value="jam">Jam enemy sensors</option>
+          <option value="evasive">Evasive maneuvers</option>
+          <option value="patch">Emergency hull patch</option>
         </select>
       </label>
 
@@ -849,6 +858,24 @@ function CommandControls({
             <option value="weapons">Weapons</option>
           </select>
         </label>
+      ) : null}
+
+      {commandType === "jam" ? (
+        <p className="command-help">
+          Damages enemy Sensors before firing resolves. Lower enemy sensors make their future shots less accurate.
+        </p>
+      ) : null}
+
+      {commandType === "evasive" ? (
+        <p className="command-help">
+          Improves Engines and adds a small shield boost. Better engines make incoming shots harder to land.
+        </p>
+      ) : null}
+
+      {commandType === "patch" ? (
+        <p className="command-help">
+          Restores hull directly. Works best while Reactor is online; if Reactor is offline, the patch is weaker.
+        </p>
       ) : null}
     </div>
   );
