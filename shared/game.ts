@@ -78,16 +78,15 @@ export interface RoomState {
   spectators: Record<string, SpectatorState>;
   ships: Partial<Record<PlayerId, Ship>>;
   turn: number;
-  pendingCommands: Partial<Record<PlayerId, CombatCommand>>;
+  activePlayer?: PlayerId;
   log: string[];
   chat: ChatMessage[];
   winner?: PlayerId;
 }
 
-export interface ClientRoomState extends Omit<RoomState, "pendingCommands"> {
+export interface ClientRoomState extends RoomState {
   you?: PlayerId;
   spectatorId?: string;
-  lockedIn: Record<PlayerId, boolean>;
 }
 
 export const PLAYER_IDS: PlayerId[] = ["captainA", "captainB"];
@@ -143,7 +142,7 @@ export function createRoom(code: string): RoomState {
     spectators: {},
     ships: {},
     turn: 1,
-    pendingCommands: {},
+    activePlayer: undefined,
     log: [`Room ${code} created. Waiting for captains.`],
     chat: []
   };
@@ -184,15 +183,12 @@ export function serializeRoom(room: RoomState, you?: PlayerId, spectatorId?: str
     spectators: room.spectators,
     ships: room.ships,
     turn: room.turn,
+    activePlayer: room.activePlayer,
     log: room.log,
     chat: room.chat,
     winner: room.winner,
     you,
-    spectatorId,
-    lockedIn: {
-      captainA: Boolean(room.pendingCommands.captainA),
-      captainB: Boolean(room.pendingCommands.captainB)
-    }
+    spectatorId
   };
 }
 
@@ -213,10 +209,10 @@ export function startCombat(room: RoomState): RoomState {
       captainB: createStarterShip("captainB")
     },
     turn: 1,
-    pendingCommands: {},
+    activePlayer: "captainA",
     log: [
       "Both captains have entered the sector.",
-      "Combat begins. Pick a command and lock in."
+      "Combat begins. Captain A has the first action."
     ]
   };
 }
@@ -264,11 +260,11 @@ export function normalizeCommand(command: CombatCommand): CombatCommand {
   return DEFAULT_COMMAND;
 }
 
-export function resolveTurn(room: RoomState): RoomState {
+export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: CombatCommand): RoomState {
   const captainA = room.ships.captainA;
   const captainB = room.ships.captainB;
 
-  if (room.phase !== "combat" || !captainA || !captainB) {
+  if (room.phase !== "combat" || !captainA || !captainB || room.activePlayer !== playerId) {
     return room;
   }
 
@@ -276,33 +272,16 @@ export function resolveTurn(room: RoomState): RoomState {
     captainA: cloneShip(captainA),
     captainB: cloneShip(captainB)
   };
-  const commands: Record<PlayerId, CombatCommand> = {
-    captainA: normalizeCommand(room.pendingCommands.captainA ?? DEFAULT_COMMAND),
-    captainB: normalizeCommand(room.pendingCommands.captainB ?? DEFAULT_COMMAND)
-  };
-  const entries: string[] = [`Turn ${room.turn} resolves.`];
+  const normalizedCommand = normalizeCommand(command);
+  const opponent = getOpponent(playerId);
+  const entries: string[] = [`Turn ${room.turn}: ${labelFor(playerId)} acts.`];
 
-  for (const playerId of PLAYER_IDS) {
-    applyPreparationCommand(playerId, ships[playerId], commands[playerId], entries);
-  }
+  applyPreparationCommand(playerId, ships[playerId], normalizedCommand, entries);
+  applyElectronicCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, entries);
+  applyFireCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, room.turn, entries);
 
-  for (const playerId of PLAYER_IDS) {
-    applyElectronicCommand(playerId, ships[playerId], ships[getOpponent(playerId)], commands[playerId], entries);
-  }
-
-  for (const playerId of PLAYER_IDS) {
-    applyFireCommand(
-      playerId,
-      ships[playerId],
-      ships[getOpponent(playerId)],
-      commands[playerId],
-      room.turn,
-      entries
-    );
-  }
-
-  for (const playerId of PLAYER_IDS) {
-    applyLifeSupportPressure(playerId, ships[playerId], entries);
+  for (const id of PLAYER_IDS) {
+    applyLifeSupportPressure(id, ships[id], entries);
   }
 
   const winner = determineWinner(ships);
@@ -316,8 +295,8 @@ export function resolveTurn(room: RoomState): RoomState {
     ...room,
     phase: winner ? "finished" : "combat",
     ships,
-    turn: winner ? room.turn : room.turn + 1,
-    pendingCommands: {},
+    turn: room.turn + 1,
+    activePlayer: winner ? undefined : opponent,
     log: nextLog,
     winner
   };

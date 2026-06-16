@@ -14,7 +14,7 @@ import {
   PlayerId,
   PLAYER_IDS,
   RecentGame,
-  resolveTurn,
+  resolvePlayerTurn,
   RoomState,
   serializeRoom,
   startCombat
@@ -234,9 +234,9 @@ io.on("connection", (socket) => {
     rooms.set(room.code, startedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
-    await notifyPlayers(startedRoom, PLAYER_IDS, {
-      title: "Combat started",
-      body: `Room ${room.code} is live. Choose your opening orders.`
+    await notifyActivePlayer(startedRoom, {
+      title: "Your turn",
+      body: `Combat started in room ${room.code}. Choose the opening action.`
     });
   });
 
@@ -254,25 +254,17 @@ io.on("connection", (socket) => {
       return;
     }
 
-    room.pendingCommands[playerId] = payload.command;
-    room.log = [
-      ...room.log,
-      `${room.players[playerId]?.name ?? "A captain"} locked in orders for turn ${room.turn}.`
-    ].slice(-30);
-
-    if (PLAYER_IDS.every((id) => room.pendingCommands[id])) {
-      const resolvedRoom = resolveTurn(room);
-      rooms.set(room.code, resolvedRoom);
-      recordRecentGame(room, resolvedRoom);
-      ack?.({ ok: true, roomCode: room.code });
-      await emitRoom(room.code);
-      await notifyTurnResult(resolvedRoom);
+    if (room.activePlayer !== playerId) {
+      ack?.({ ok: false, error: "It is not your turn yet." });
       return;
     }
 
+    const resolvedRoom = resolvePlayerTurn(room, playerId, payload.command ?? { type: "brace" });
+    rooms.set(room.code, resolvedRoom);
+    recordRecentGame(room, resolvedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
-    await notifyWaitingPlayers(room, playerId);
+    await notifyTurnResult(resolvedRoom);
   });
 
   socket.on("sendChat", async (payload: SendChatPayload, ack?: (response: ClientAck) => void) => {
@@ -515,7 +507,7 @@ function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
     roomCode: resolvedRoom.code,
     winnerName: resolvedRoom.players[resolvedRoom.winner]?.name ?? labelForPlayer(resolvedRoom.winner),
     loserName: resolvedRoom.players[loser]?.name ?? labelForPlayer(loser),
-    rounds: resolvedRoom.turn,
+    rounds: previousRoom.turn,
     completedAt: Date.now()
   };
 
@@ -541,17 +533,6 @@ function storePushSubscription(
   pushSubscriptions.set(roomCode, roomSubscriptions);
 }
 
-async function notifyWaitingPlayers(room: RoomState, submittedBy: PlayerId) {
-  const waitingPlayers = PLAYER_IDS.filter((playerId) => !room.pendingCommands[playerId]);
-  const submittedName = room.players[submittedBy]?.name ?? "The other captain";
-
-  await notifyPlayers(room, waitingPlayers, {
-    title: "Your orders are needed",
-    body: `${submittedName} has locked in orders for turn ${room.turn}.`,
-    tag: `starfall-${room.code}-turn-${room.turn}-waiting`
-  });
-}
-
 async function notifyTurnResult(room: RoomState) {
   if (room.phase === "finished") {
     const winnerName = room.winner ? room.players[room.winner]?.name ?? "A captain" : "No one";
@@ -563,11 +544,22 @@ async function notifyTurnResult(room: RoomState) {
     return;
   }
 
-  await notifyPlayers(room, PLAYER_IDS, {
-    title: `Turn ${room.turn} ready`,
-    body: `Review the battle log and choose your next orders in room ${room.code}.`,
+  await notifyActivePlayer(room, {
+    title: `Turn ${room.turn}: your action`,
+    body: `Review the last action and choose your next move in room ${room.code}.`,
     tag: `starfall-${room.code}-turn-${room.turn}`
   });
+}
+
+async function notifyActivePlayer(
+  room: RoomState,
+  notification: { title: string; body: string; tag?: string }
+) {
+  if (!room.activePlayer) {
+    return;
+  }
+
+  await notifyPlayer(room, room.activePlayer, notification);
 }
 
 async function notifyPlayers(

@@ -180,7 +180,7 @@ export default function App() {
   const you = room?.you;
   const opponent = you ? (you === "captainA" ? "captainB" : "captainA") : undefined;
   const isSpectator = Boolean(room?.spectatorId && !you);
-  const youLockedIn = you ? room?.lockedIn[you] : false;
+  const isYourTurn = Boolean(room?.phase === "combat" && you && room.activePlayer === you);
 
   function rememberName() {
     const normalizedName = playerName.trim() || "Captain";
@@ -220,7 +220,7 @@ export default function App() {
   }
 
   function submitCommand() {
-    if (!room) {
+    if (!room || !isYourTurn) {
       return;
     }
 
@@ -411,7 +411,7 @@ export default function App() {
                     room={room}
                     selectedSystem={commandType === "repair" ? repairSystem : undefined}
                     onSelectSystem={
-                      youLockedIn
+                      !isYourTurn
                         ? undefined
                         : (systemId) => {
                             setCommandType("repair");
@@ -430,7 +430,7 @@ export default function App() {
                     room={room}
                     selectedSystem={commandType === "fire" ? targetSystem : undefined}
                     onSelectSystem={
-                      youLockedIn
+                      !isYourTurn
                         ? undefined
                         : (systemId) => {
                             setCommandType("fire");
@@ -454,9 +454,9 @@ export default function App() {
                 ) : (
                   <>
                     <p className="muted">
-                      {youLockedIn
-                        ? "Orders locked. Waiting for the other captain."
-                        : "Choose one command, then lock in. Turns resolve when both captains are ready."}
+                      {isYourTurn
+                        ? "Your turn. Choose one action; it resolves immediately."
+                        : "Waiting for the other captain. You will see their action resolve here."}
                     </p>
                     <CommandControls
                       commandType={commandType}
@@ -467,14 +467,14 @@ export default function App() {
                       setRepairSystem={setRepairSystem}
                       divertTarget={divertTarget}
                       setDivertTarget={setDivertTarget}
-                      disabled={Boolean(youLockedIn)}
+                      disabled={!isYourTurn}
                     />
-                    <button onClick={submitCommand} disabled={Boolean(youLockedIn)}>
-                      {youLockedIn ? "Orders locked" : "Lock in orders"}
+                    <button onClick={submitCommand} disabled={!isYourTurn}>
+                      {isYourTurn ? "Take action" : "Waiting"}
                     </button>
                   </>
                 )}
-                <ReadyStatus room={room} />
+                <TurnStatus room={room} />
               </aside>
             </section>
           )}
@@ -619,7 +619,7 @@ function SpectatorPanel({ room }: { room: ClientRoomState }) {
     <div className="spectator-panel">
       <p className="eyebrow">Spectator Mode</p>
       <p className="muted">
-        You are watching this battle. Captains lock in orders, and turns resolve when both are ready.
+        You are watching this battle. Captains take one action at a time, and each action resolves immediately.
       </p>
     </div>
   );
@@ -906,13 +906,21 @@ function SystemSelect({
   );
 }
 
-function ReadyStatus({ room }: { room: ClientRoomState }) {
+function TurnStatus({ room }: { room: ClientRoomState }) {
+  const activePlayerName = room.activePlayer
+    ? room.players[room.activePlayer]?.name ?? (room.activePlayer === "captainA" ? "Captain A" : "Captain B")
+    : undefined;
+
   return (
     <div className="ready-grid">
       {PLAYER_IDS.map((playerId) => (
-        <div key={playerId} className={room.lockedIn[playerId] ? "ready-pill ready" : "ready-pill"}>
+        <div key={playerId} className={room.activePlayer === playerId ? "ready-pill ready" : "ready-pill"}>
           {playerId === "captainA" ? "Captain A" : "Captain B"}:{" "}
-          {room.lockedIn[playerId] ? "Orders locked" : "Choosing"}
+          {room.phase === "finished"
+            ? "Done"
+            : room.activePlayer === playerId
+              ? `Acting${activePlayerName ? ` (${activePlayerName})` : ""}`
+              : "Waiting"}
         </div>
       ))}
     </div>
