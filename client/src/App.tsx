@@ -693,14 +693,10 @@ export default function App() {
                     playerId={you}
                     room={room}
                     selectedSystem={commandType === "repair" ? repairSystem : undefined}
-                    onSelectSystem={
-                      !isYourTurn
-                        ? undefined
-                        : (systemId) => {
-                            setCommandType("repair");
-                            setRepairSystem(systemId);
-                          }
-                    }
+                    onSelectSystem={(systemId) => {
+                      setCommandType("repair");
+                      setRepairSystem(systemId);
+                    }}
                     interactionHint="Click one of your rooms to set a repair order."
                   />
                 ) : room.ships.captainA ? (
@@ -712,14 +708,10 @@ export default function App() {
                     playerId={opponent}
                     room={room}
                     selectedSystem={commandType === "fire" ? targetSystem : undefined}
-                    onSelectSystem={
-                      !isYourTurn
-                        ? undefined
-                        : (systemId) => {
-                            setCommandType("fire");
-                            setTargetSystem(systemId);
-                          }
-                    }
+                    onSelectSystem={(systemId) => {
+                      setCommandType("fire");
+                      setTargetSystem(systemId);
+                    }}
                     interactionHint="Click an enemy room to set a fire order."
                     enemy
                   />
@@ -752,7 +744,7 @@ export default function App() {
                       <p className="muted">
                         {isYourTurn
                           ? "Your turn. Choose one action; it resolves immediately."
-                          : "Waiting for the other captain. You will see their action resolve here."}
+                          : "Plan your next action while you wait. It won't submit until your turn."}
                       </p>
                       <CommandControls
                         commandType={commandType}
@@ -765,7 +757,7 @@ export default function App() {
                         setCrewAssignments={setCrewAssignmentsDraft}
                         yourShip={yourShip}
                         yourPlayer={room.you ? room.players[room.you] : undefined}
-                        disabled={!isYourTurn}
+                        disabled={false}
                       />
                     </div>
                     <button
@@ -775,7 +767,7 @@ export default function App() {
                       disabled={!isYourTurn || (commandType === "redeploy" && !redeployReady)}
                     >
                       {!isYourTurn
-                        ? "Waiting"
+                        ? "Waiting for your turn"
                         : commandType === "redeploy"
                           ? redeployReady
                             ? "Confirm redeploy"
@@ -1004,6 +996,10 @@ function DeployPanel({
   );
   const deploymentReady = Boolean(yourShip && sanitizeCrewAssignments(yourShip, crewAssignments));
   const youConfirmed = Boolean(room.you && room.players[room.you]?.crewDeployed);
+  const deployUnchanged = Boolean(
+    youConfirmed && yourShip && crewAssignmentsEqual(crewAssignments, yourShip.crewAssignments)
+  );
+  const deploySubmitDisabled = !deploymentReady || deployUnchanged;
 
   function adjustCrewAssignment(systemId: SystemId, delta: number) {
     if (!yourShip) {
@@ -1057,8 +1053,12 @@ function DeployPanel({
             onAdjust={adjustCrewAssignment}
             disabled={false}
           />
-          <button type="button" onClick={onSubmit} disabled={!deploymentReady}>
-            {youConfirmed ? "Update deployment" : "Confirm deployment"}
+          <button type="button" onClick={onSubmit} disabled={deploySubmitDisabled}>
+            {!youConfirmed
+              ? "Confirm deployment"
+              : deployUnchanged
+                ? "Waiting for opponent"
+                : "Update deployment"}
           </button>
         </>
       ) : (
