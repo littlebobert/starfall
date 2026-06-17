@@ -6,24 +6,42 @@ import { fileURLToPath } from "node:url";
 import { Server, Socket } from "socket.io";
 import webpush from "web-push";
 import {
+  beginDeploy,
   canRematch,
   canStartCombat,
   ChatMessage,
   ClientRoomState,
   CombatCommand,
+  createDefaultPlayerState,
   createRoom,
   DEFAULT_SHIP_CLASS_ID,
+  ensurePlayerProgress,
+  finalizeSessionMatch,
   isShipClassId,
+  isValidDeviceId,
+  launchCombat,
+  bothCrewDeployed,
   PlayerId,
   PLAYER_IDS,
+  PlayerStats,
+  purchaseSystemUpgrade,
   RecentGame,
+  recordSessionGameWin,
   rematchCombat,
+  resetPlayerProgress,
   resolvePlayerTurn,
   RoomState,
   selectShipClass,
   serializeRoom,
-  startCombat
+  submitCrewDeployment,
+  SystemId,
+  SYSTEM_DEFINITIONS
 } from "../shared/game";
+import {
+  getPlayerStats,
+  recordGameResult,
+  recordMatchResult
+} from "./playerStatsStore";
 
 interface ClientAck {
   ok: boolean;
@@ -33,10 +51,17 @@ interface ClientAck {
 
 interface CreateRoomPayload {
   playerName?: string;
+  deviceId?: string;
 }
 
 interface JoinRoomPayload {
   roomCode?: string;
+  playerName?: string;
+  deviceId?: string;
+}
+
+interface SyncPlayerStatsPayload {
+  deviceId?: string;
   playerName?: string;
 }
 
@@ -46,6 +71,10 @@ interface RoomPayload {
 
 interface SelectShipClassPayload extends RoomPayload {
   shipClassId?: string;
+}
+
+interface SubmitCrewDeploymentPayload extends RoomPayload {
+  crewAssignments?: Partial<Record<string, number>>;
 }
 
 interface SubmitCommandPayload extends RoomPayload {
@@ -60,11 +89,16 @@ interface SavePushSubscriptionPayload extends RoomPayload {
   subscription?: webpush.PushSubscription;
 }
 
+interface PurchaseUpgradePayload extends RoomPayload {
+  systemId?: SystemId;
+}
+
 interface SocketData {
   roomCode?: string;
   playerId?: PlayerId;
   spectatorId?: string;
   playerName?: string;
+  deviceId?: string;
 }
 
 interface ClientToServerEvents {
@@ -73,6 +107,7 @@ interface ClientToServerEvents {
   startGame: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   rematch: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   selectShipClass: (payload: SelectShipClassPayload, ack?: (response: ClientAck) => void) => void;
+  submitCrewDeployment: (payload: SubmitCrewDeploymentPayload, ack?: (response: ClientAck) => void) => void;
   submitCommand: (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => void;
   sendChat: (payload: SendChatPayload, ack?: (response: ClientAck) => void) => void;
   savePushSubscription: (
@@ -80,11 +115,14 @@ interface ClientToServerEvents {
     ack?: (response: ClientAck) => void
   ) => void;
   leaveRoom: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
+  purchaseUpgrade: (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => void;
+  syncPlayerStats: (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => void;
 }
 
 interface ServerToClientEvents {
   roomState: (state: ClientRoomState) => void;
   recentGames: (games: RecentGame[]) => void;
+  playerStats: (stats: PlayerStats) => void;
 }
 
 interface InterServerEvents {}
@@ -159,6 +197,20 @@ app.use((request, response, next) => {
 io.on("connection", (socket) => {
   socket.emit("recentGames", recentGames);
 
+  socket.on("syncPlayerStats", (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => {
+    const deviceId = normalizeDeviceId(payload.deviceId);
+
+    if (!deviceId) {
+      ack?.({ ok: false, error: "Could not identify this device." });
+      return;
+    }
+
+    socket.data.deviceId = deviceId;
+    const stats = getPlayerStats(deviceId, normalizePlayerName(payload.playerName));
+    socket.emit("playerStats", stats);
+    ack?.({ ok: true });
+  });
+
   socket.on("createRoom", async (payload: CreateRoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = createRoomCode();
     if (!roomCode) {
@@ -167,20 +219,23 @@ io.on("connection", (socket) => {
     }
 
     const playerName = normalizePlayerName(payload.playerName);
+    const deviceId = normalizeDeviceId(payload.deviceId);
+
+    if (!deviceId) {
+      ack?.({ ok: false, error: "Could not identify this device." });
+      return;
+    }
+
     const room = createRoom(roomCode);
 
-    room.players.captainA = {
-      id: "captainA",
-      name: playerName,
-      connected: true,
-      shipClassId: DEFAULT_SHIP_CLASS_ID
-    };
+    room.players.captainA = createDefaultPlayerState("captainA", playerName, true, DEFAULT_SHIP_CLASS_ID, deviceId);
     room.log.push(`${playerName} took command of Captain A.`);
     rooms.set(roomCode, room);
 
-    await joinPlayerSocketToRoom(socket, roomCode, "captainA", playerName);
+    await joinPlayerSocketToRoom(socket, roomCode, "captainA", playerName, deviceId);
     ack?.({ ok: true, roomCode });
     await emitRoom(roomCode);
+    emitPlayerStats(socket, deviceId, playerName);
   });
 
   socket.on("joinRoom", async (payload: JoinRoomPayload, ack?: (response: ClientAck) => void) => {
@@ -193,22 +248,28 @@ io.on("connection", (socket) => {
     }
 
     const playerName = normalizePlayerName(payload.playerName);
+    const deviceId = normalizeDeviceId(payload.deviceId);
+
+    if (!deviceId) {
+      ack?.({ ok: false, error: "Could not identify this device." });
+      return;
+    }
+
     const rejoinPlayerId = findDisconnectedSeat(room, playerName);
     const openPlayerId = room.phase === "lobby" ? findOpenCaptainSeat(room) : undefined;
     const playerId = rejoinPlayerId ?? openPlayerId;
 
     if (playerId) {
-      room.players[playerId] = {
-        id: playerId,
-        name: playerName,
-        connected: true,
-        shipClassId: room.players[playerId]?.shipClassId ?? DEFAULT_SHIP_CLASS_ID
-      };
+      const existingPlayer = room.players[playerId];
+      room.players[playerId] = existingPlayer
+        ? ensurePlayerProgress({ ...existingPlayer, name: playerName, connected: true, deviceId })
+        : createDefaultPlayerState(playerId, playerName, true, DEFAULT_SHIP_CLASS_ID, deviceId);
       room.log.push(`${playerName} joined as ${playerId === "captainA" ? "Captain A" : "Captain B"}.`);
 
-      await joinPlayerSocketToRoom(socket, roomCode, playerId, playerName);
+      await joinPlayerSocketToRoom(socket, roomCode, playerId, playerName, deviceId);
       ack?.({ ok: true, roomCode });
       await emitRoom(roomCode);
+      emitPlayerStats(socket, deviceId, playerName);
       return;
     }
 
@@ -243,14 +304,10 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const startedRoom = startCombat(room);
+    const startedRoom = beginDeploy(room);
     rooms.set(room.code, startedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
-    await notifyActivePlayer(startedRoom, {
-      title: "Your turn",
-      body: `Combat started in room ${room.code}. Choose the opening action.`
-    });
   });
 
   socket.on("selectShipClass", async (payload: SelectShipClassPayload, ack?: (response: ClientAck) => void) => {
@@ -279,6 +336,46 @@ io.on("connection", (socket) => {
     await emitRoom(room.code);
   });
 
+  socket.on(
+    "submitCrewDeployment",
+    async (payload: SubmitCrewDeploymentPayload, ack?: (response: ClientAck) => void) => {
+      const room = getSocketRoom(socket, payload.roomCode);
+      const playerId = socket.data.playerId;
+
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: "Join a room before deploying crew." });
+        return;
+      }
+
+      if (room.phase !== "deploy") {
+        ack?.({ ok: false, error: "Crew can only be deployed before combat begins." });
+        return;
+      }
+
+      const updatedRoom = submitCrewDeployment(room, playerId, payload.crewAssignments);
+      if (updatedRoom === room) {
+        ack?.({ ok: false, error: "Assign every crew member before confirming deployment." });
+        return;
+      }
+
+      let nextRoom = updatedRoom;
+      if (bothCrewDeployed(updatedRoom)) {
+        nextRoom = launchCombat(updatedRoom);
+      }
+
+      rooms.set(room.code, nextRoom);
+      ack?.({ ok: true, roomCode: room.code });
+      await emitRoom(room.code);
+
+      if (nextRoom.phase === "combat") {
+        await notifyActivePlayer(nextRoom, {
+          title: "Your turn",
+          body: `Combat started in room ${room.code}. Choose the opening action.`
+        });
+      }
+    }
+  );
+
   socket.on("rematch", async (payload: RoomPayload, ack?: (response: ClientAck) => void) => {
     const room = getSocketRoom(socket, payload.roomCode);
 
@@ -306,11 +403,41 @@ io.on("connection", (socket) => {
     rooms.set(room.code, rematchedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
-    await notifyActivePlayer(rematchedRoom, {
-      title: "Rematch started",
-      body: `A new battle begins in room ${room.code}. Choose the opening action.`
-    });
   });
+
+  socket.on(
+    "purchaseUpgrade",
+    async (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => {
+      const room = getSocketRoom(socket, payload.roomCode);
+      const playerId = socket.data.playerId;
+      const systemId = payload.systemId;
+
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: "Join a room before purchasing upgrades." });
+        return;
+      }
+
+      if (room.phase !== "finished") {
+        ack?.({ ok: false, error: "Upgrades can only be purchased after a battle." });
+        return;
+      }
+
+      if (!systemId || !SYSTEM_DEFINITIONS.some((system) => system.id === systemId)) {
+        ack?.({ ok: false, error: "Choose a valid system to upgrade." });
+        return;
+      }
+
+      const updatedRoom = purchaseSystemUpgrade(room, playerId, systemId);
+      if (updatedRoom === room) {
+        ack?.({ ok: false, error: "Not enough credits or system is already max level." });
+        return;
+      }
+
+      rooms.set(room.code, updatedRoom);
+      ack?.({ ok: true, roomCode: room.code });
+      await emitRoom(room.code);
+    }
+  );
 
   socket.on("submitCommand", async (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => {
     const room = getSocketRoom(socket, payload.roomCode);
@@ -383,8 +510,13 @@ io.on("connection", (socket) => {
 
   socket.on("leaveRoom", async (_payload: RoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = socket.data.roomCode;
+    const deviceId = socket.data.deviceId;
     await leaveCurrentRoom(socket);
     ack?.({ ok: true, roomCode });
+
+    if (deviceId) {
+      emitPlayerStats(socket, deviceId);
+    }
 
     if (roomCode) {
       await emitRoom(roomCode);
@@ -437,10 +569,15 @@ async function joinPlayerSocketToRoom(
   socket: StarfallSocket,
   roomCode: string,
   playerId: PlayerId,
-  playerName: string
+  playerName: string,
+  deviceId?: string
 ) {
   await joinSocketToRoom(socket, roomCode, playerName);
   socket.data.playerId = playerId;
+
+  if (deviceId) {
+    socket.data.deviceId = deviceId;
+  }
 }
 
 async function joinSpectatorSocketToRoom(
@@ -457,13 +594,29 @@ async function leaveCurrentRoom(socket: StarfallSocket) {
   const roomCode = socket.data.roomCode;
   const playerId = socket.data.playerId;
   const spectatorId = socket.data.spectatorId;
-  const room = roomCode ? rooms.get(roomCode) : undefined;
+  let room = roomCode ? rooms.get(roomCode) : undefined;
 
   if (room && playerId && room.players[playerId]) {
-    room.players[playerId] = {
-      ...room.players[playerId],
+    const winsA = room.sessionGameWins?.captainA ?? 0;
+    const winsB = room.sessionGameWins?.captainB ?? 0;
+    const { room: roomAfterMatch, matchResult } = finalizeSessionMatch(room);
+
+    if (matchResult) {
+      recordMatchResult(matchResult);
+      roomAfterMatch.log = [
+        ...roomAfterMatch.log,
+        `${matchResult.winnerName} wins the room match ${winsA}-${winsB} before departure.`
+      ].slice(-30);
+      await notifyPlayerStats([matchResult.winnerDeviceId, matchResult.loserDeviceId]);
+    }
+
+    room = roomAfterMatch;
+    rooms.set(room.code, room);
+
+    room.players[playerId] = resetPlayerProgress({
+      ...room.players[playerId]!,
       connected: false
-    };
+    });
     room.log = [
       ...room.log,
       `${room.players[playerId]?.name ?? "A captain"} left the room.`
@@ -574,11 +727,12 @@ function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
     return;
   }
 
-  const loser = resolvedRoom.winner === "captainA" ? "captainB" : "captainA";
+  const winner = resolvedRoom.winner;
+  const loser = winner === "captainA" ? "captainB" : "captainA";
   const game: RecentGame = {
     id: `game-${resolvedRoom.code}-${Date.now()}`,
     roomCode: resolvedRoom.code,
-    winnerName: resolvedRoom.players[resolvedRoom.winner]?.name ?? labelForPlayer(resolvedRoom.winner),
+    winnerName: resolvedRoom.players[winner]?.name ?? labelForPlayer(winner),
     loserName: resolvedRoom.players[loser]?.name ?? labelForPlayer(loser),
     rounds: previousRoom.turn,
     completedAt: Date.now()
@@ -587,6 +741,49 @@ function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
   recentGames.unshift(game);
   recentGames.splice(8);
   io.emit("recentGames", recentGames);
+
+  const nextRoom = recordSessionGameWin(resolvedRoom, winner);
+  rooms.set(nextRoom.code, nextRoom);
+
+  const winnerDeviceId = nextRoom.players[winner]?.deviceId;
+  const loserDeviceId = nextRoom.players[loser]?.deviceId;
+
+  if (winnerDeviceId && loserDeviceId) {
+    recordGameResult(
+      winnerDeviceId,
+      loserDeviceId,
+      nextRoom.players[winner]?.name ?? labelForPlayer(winner),
+      nextRoom.players[loser]?.name ?? labelForPlayer(loser)
+    );
+    void notifyPlayerStats([winnerDeviceId, loserDeviceId]);
+  }
+}
+
+function normalizeDeviceId(deviceId?: string): string | undefined {
+  const normalized = deviceId?.trim().toLowerCase();
+
+  if (!normalized || !isValidDeviceId(normalized)) {
+    return undefined;
+  }
+
+  return normalized;
+}
+
+function emitPlayerStats(socket: StarfallSocket, deviceId: string, playerName?: string) {
+  socket.emit("playerStats", getPlayerStats(deviceId, playerName));
+}
+
+async function notifyPlayerStats(deviceIds: string[]) {
+  const uniqueDeviceIds = [...new Set(deviceIds)];
+  const sockets = await io.fetchSockets();
+
+  for (const socket of sockets) {
+    const deviceId = socket.data.deviceId;
+
+    if (deviceId && uniqueDeviceIds.includes(deviceId)) {
+      socket.emit("playerStats", getPlayerStats(deviceId, socket.data.playerName));
+    }
+  }
 }
 
 function labelForPlayer(playerId: PlayerId): string {

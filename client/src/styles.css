@@ -145,6 +145,41 @@ p {
   gap: 1rem;
 }
 
+.landing-sidebar {
+  display: grid;
+  gap: 1rem;
+}
+
+.player-record {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.record-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+
+.record-stat {
+  display: grid;
+  gap: 0.25rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.75rem;
+  padding: 0.75rem;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.record-stat span {
+  color: #94a3b8;
+  font-size: 0.8rem;
+}
+
+.record-stat strong {
+  font-size: 1.35rem;
+  color: #e2e8f0;
+}
+
 .stack {
   display: grid;
   gap: 1rem;
@@ -518,6 +553,66 @@ p {
   margin: 0;
 }
 
+.upgrade-shop {
+  display: grid;
+  gap: 0.75rem;
+}
+
+.upgrade-shop-header {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.credit-balance {
+  font-size: 1.5rem;
+  color: #fde68a;
+}
+
+.upgrade-grid {
+  display: grid;
+  gap: 0.65rem;
+}
+
+.upgrade-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto auto;
+  gap: 0.65rem;
+  align-items: center;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.75rem;
+  padding: 0.65rem 0.75rem;
+  background: rgba(15, 23, 42, 0.45);
+}
+
+.upgrade-row p {
+  margin: 0.15rem 0 0;
+  font-size: 0.8rem;
+}
+
+.upgrade-levels {
+  display: flex;
+  gap: 0.35rem;
+}
+
+.upgrade-pip {
+  width: 0.65rem;
+  height: 0.65rem;
+  border-radius: 999px;
+  background: rgba(148, 163, 184, 0.25);
+}
+
+.upgrade-pip.active {
+  background: #7dd3fc;
+}
+
+.upgrade-max {
+  color: #86efac;
+  font-size: 0.85rem;
+  font-weight: 800;
+}
+
 .battle-log ol {
   display: grid;
   gap: 0.45rem;
@@ -537,6 +632,18 @@ p {
 .battle-log li.critical {
   border-left-color: rgba(251, 146, 60, 0.88);
   color: #fde68a;
+}
+
+.battle-log li.suffocation {
+  border-left-color: rgba(251, 146, 60, 0.55);
+  color: #fdba74;
+}
+
+.suffocation-alert {
+  margin: 0.35rem 0 0;
+  color: #fdba74;
+  font-size: 0.85rem;
+  font-weight: 800;
 }
 
 .command-help-crit {
@@ -602,7 +709,8 @@ button.crew-stepper {
 }
 
 .chat-panel h2,
-.recent-games h2 {
+.recent-games h2,
+.player-record h2 {
   margin-bottom: 0;
 }
 
@@ -659,7 +767,7 @@ button.crew-stepper {
   color: #1f2937;
 }
 
-.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card) {
+.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card, .upgrade-row) {
   border-color: #d1d5db;
   color: #1f2937;
   background: #ffffff;
@@ -689,6 +797,15 @@ button.crew-stepper {
 .work-safe .battle-log li.critical {
   border-left-color: #d97706;
   color: #92400e;
+}
+
+.work-safe .battle-log li.suffocation {
+  border-left-color: #ea580c;
+  color: #c2410c;
+}
+
+.work-safe .suffocation-alert {
+  color: #c2410c;
 }
 
 .work-safe .command-help-crit {

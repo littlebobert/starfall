@@ -1,6 +1,6 @@
 export type PlayerId = "captainA" | "captainB";
 
-export type RoomPhase = "lobby" | "combat" | "finished";
+export type RoomPhase = "lobby" | "deploy" | "combat" | "finished";
 
 export type ShipClassId = "hauler" | "skiff" | "cutter";
 
@@ -38,6 +38,7 @@ export interface Ship {
   crewTotal: number;
   crewAssignments: Record<SystemId, number>;
   systems: Record<SystemId, ShipSystemState>;
+  oxygenDeadlineTurn?: number;
 }
 
 export interface PlayerState {
@@ -45,6 +46,10 @@ export interface PlayerState {
   name: string;
   connected: boolean;
   shipClassId: ShipClassId;
+  crewDeployed?: boolean;
+  credits: number;
+  systemUpgrades: Record<SystemId, number>;
+  deviceId?: string;
 }
 
 export interface SpectatorState {
@@ -89,6 +94,7 @@ export interface RoomState {
   log: string[];
   chat: ChatMessage[];
   winner?: PlayerId;
+  sessionGameWins?: Partial<Record<PlayerId, number>>;
 }
 
 export interface ClientRoomState extends RoomState {
@@ -125,6 +131,32 @@ export {
   sanitizeCrewAssignments
 } from "./crew";
 
+export {
+  applySystemUpgrades,
+  calculateLoserCredits,
+  calculateWinnerCredits,
+  createDefaultSystemUpgrades,
+  formatLoserCreditsSummary,
+  formatUpgradePurchase,
+  formatVictoryCreditsSummary,
+  getUpgradeCost,
+  getUpgradeHpBonus,
+  MAX_UPGRADE_LEVEL,
+  MIN_UPGRADE_LEVEL,
+  normalizeSystemUpgrades,
+  type SystemUpgrades,
+  type VictoryCreditsBreakdown
+} from "./upgrades";
+
+export {
+  createEmptyPlayerStats,
+  finalizeSessionMatch,
+  isValidDeviceId,
+  recordSessionGameWin,
+  type PlayerStats,
+  type SessionMatchResult
+} from "./playerStats";
+
 import { createShip, DEFAULT_SHIP_CLASS_ID, getShipClass, isShipClassId } from "./ships";
 import {
   applyCrewUpkeep,
@@ -135,9 +167,54 @@ import {
   getCrewAccuracyBonus,
   getCrewCritBonus,
   getCrewEvasionBonus,
-  getCrewLifeSupportMitigation,
   sanitizeCrewAssignments
 } from "./crew";
+import {
+  applySystemUpgrades,
+  calculateLoserCredits,
+  calculateWinnerCredits,
+  createDefaultSystemUpgrades,
+  formatLoserCreditsSummary,
+  formatUpgradePurchase,
+  formatVictoryCreditsSummary,
+  getUpgradeCost,
+  normalizeSystemUpgrades
+} from "./upgrades";
+
+export function createDefaultPlayerState(
+  id: PlayerId,
+  name: string,
+  connected: boolean,
+  shipClassId: ShipClassId = DEFAULT_SHIP_CLASS_ID,
+  deviceId?: string
+): PlayerState {
+  return {
+    id,
+    name,
+    connected,
+    shipClassId,
+    credits: 0,
+    systemUpgrades: createDefaultSystemUpgrades(),
+    deviceId
+  };
+}
+
+export function ensurePlayerProgress(player: PlayerState): PlayerState {
+  return {
+    ...player,
+    credits: player.credits ?? 0,
+    systemUpgrades: normalizeSystemUpgrades(player.systemUpgrades)
+  };
+}
+
+export function resetPlayerProgress(player: PlayerState): PlayerState {
+  return {
+    ...player,
+    credits: 0,
+    systemUpgrades: createDefaultSystemUpgrades(),
+    crewDeployed: undefined
+  };
+}
 
 export const SYSTEM_DEFINITIONS: ShipSystemDefinition[] = [
   {
@@ -183,6 +260,8 @@ export const DEFAULT_COMMAND: CombatCommand = {
 };
 
 export const CRITICAL_STRIKE_LOG_MARKER = "CRITICAL STRIKE";
+export const HULL_PUNCTURE_LOG_MARKER = "HULL PUNCTURE";
+export const SUFFOCATION_TURNS = 3;
 
 const CRITICAL_STRIKE_BASE_CHANCE = 8;
 const CRITICAL_STRIKE_SENSOR_BONUS = 22;
@@ -190,6 +269,16 @@ const CRITICAL_STRIKE_WEAPON_BONUS = 12;
 const CRITICAL_STRIKE_MAX_CHANCE = 42;
 const CRITICAL_STRIKE_HULL_BONUS = 3;
 const CRITICAL_STRIKE_SYSTEM_BONUS = 2;
+const CRITICAL_PUNCTURE_CHANCE = 40;
+
+export function getSuffocationTurnsRemaining(ship: Ship, currentTurn: number): number | undefined {
+  if (ship.oxygenDeadlineTurn === undefined || ship.hull <= 0) {
+    return undefined;
+  }
+
+  const remaining = ship.oxygenDeadlineTurn - currentTurn;
+  return remaining > 0 ? remaining : undefined;
+}
 
 export function getCriticalStrikeChance(ship: Ship): number {
   const sensorBonus = integrityPercent(ship, "sensors") * CRITICAL_STRIKE_SENSOR_BONUS;
@@ -250,8 +339,14 @@ function shipClassForPlayer(room: RoomState, playerId: PlayerId): ShipClassId {
 
 function buildCombatShips(room: RoomState): Record<PlayerId, Ship> {
   return {
-    captainA: createShip("captainA", shipClassForPlayer(room, "captainA")),
-    captainB: createShip("captainB", shipClassForPlayer(room, "captainB"))
+    captainA: applySystemUpgrades(
+      createShip("captainA", shipClassForPlayer(room, "captainA")),
+      room.players.captainA?.systemUpgrades
+    ),
+    captainB: applySystemUpgrades(
+      createShip("captainB", shipClassForPlayer(room, "captainB")),
+      room.players.captainB?.systemUpgrades
+    )
   };
 }
 
@@ -280,27 +375,160 @@ export function canStartCombat(room: RoomState): boolean {
   return PLAYER_IDS.every((id) => room.players[id]?.connected);
 }
 
-export function startCombat(room: RoomState): RoomState {
-  if (!canStartCombat(room)) {
+export function bothCrewDeployed(room: RoomState): boolean {
+  return PLAYER_IDS.every((id) => room.players[id]?.connected && room.players[id]?.crewDeployed);
+}
+
+export function beginDeploy(room: RoomState): RoomState {
+  if (!canStartCombat(room) || room.phase !== "lobby") {
+    return room;
+  }
+
+  const players = { ...room.players };
+  for (const playerId of PLAYER_IDS) {
+    const player = players[playerId];
+    if (player) {
+      players[playerId] = {
+        ...player,
+        crewDeployed: false
+      };
+    }
+  }
+
+  return {
+    ...room,
+    phase: "deploy",
+    ships: buildCombatShips(room),
+    players,
+    turn: 1,
+    activePlayer: undefined,
+    winner: undefined,
+    log: [...room.log, "Both captains are connected. Deploy your crew before combat begins."].slice(-30)
+  };
+}
+
+export function submitCrewDeployment(
+  room: RoomState,
+  playerId: PlayerId,
+  assignments?: Partial<Record<SystemId, number>>
+): RoomState {
+  const player = room.players[playerId];
+  const ship = room.ships[playerId];
+
+  if (room.phase !== "deploy" || !player || !ship) {
+    return room;
+  }
+
+  const normalized = sanitizeCrewAssignments(ship, assignments);
+  if (!normalized) {
     return room;
   }
 
   return {
     ...room,
+    ships: {
+      ...room.ships,
+      [playerId]: {
+        ...ship,
+        crewAssignments: normalized
+      }
+    },
+    players: {
+      ...room.players,
+      [playerId]: {
+        ...player,
+        crewDeployed: true
+      }
+    },
+    log: [...room.log, `${playerLabel(room, playerId)} confirms crew deployment.`].slice(-30)
+  };
+}
+
+export function launchCombat(room: RoomState): RoomState {
+  if (room.phase !== "deploy" || !bothCrewDeployed(room)) {
+    return room;
+  }
+
+  const players = { ...room.players };
+  for (const playerId of PLAYER_IDS) {
+    const player = players[playerId];
+    if (player) {
+      players[playerId] = {
+        ...player,
+        crewDeployed: undefined
+      };
+    }
+  }
+
+  return {
+    ...room,
     phase: "combat",
-    ships: buildCombatShips(room),
+    players,
     turn: 1,
     activePlayer: "captainA",
     winner: undefined,
     log: [
+      ...room.log,
       `${playerLabel(room, "captainA")} deploys a ${getShipClass(shipClassForPlayer(room, "captainA")).name}. ${playerLabel(room, "captainB")} deploys a ${getShipClass(shipClassForPlayer(room, "captainB")).name}.`,
       `Combat begins. ${playerLabel(room, "captainA")} has the first action.`
-    ]
+    ].slice(-30)
   };
+}
+
+export function startCombat(room: RoomState): RoomState {
+  return beginDeploy(room);
 }
 
 export function canRematch(room: RoomState): boolean {
   return room.phase === "finished" && canStartCombat(room);
+}
+
+export function purchaseSystemUpgrade(
+  room: RoomState,
+  playerId: PlayerId,
+  systemId: SystemId
+): RoomState {
+  const rawPlayer = room.players[playerId];
+
+  if (room.phase !== "finished" || !rawPlayer) {
+    return room;
+  }
+
+  const player = ensurePlayerProgress(rawPlayer);
+
+  const system = SYSTEM_DEFINITIONS.find((entry) => entry.id === systemId);
+  if (!system) {
+    return room;
+  }
+
+  const upgrades = normalizeSystemUpgrades(player.systemUpgrades);
+  const currentLevel = upgrades[systemId];
+  const cost = getUpgradeCost(currentLevel);
+
+  if (!cost || player.credits < cost) {
+    return room;
+  }
+
+  const nextLevel = currentLevel + 1;
+
+  return {
+    ...room,
+    players: {
+      ...room.players,
+      [playerId]: {
+        ...player,
+        credits: player.credits - cost,
+        systemUpgrades: {
+          ...upgrades,
+          [systemId]: nextLevel
+        }
+      }
+    },
+    log: [
+      ...room.log,
+      formatUpgradePurchase(playerLabel(room, playerId), system.name, nextLevel, cost)
+    ].slice(-30)
+  };
 }
 
 export function rematchCombat(room: RoomState): RoomState {
@@ -308,20 +536,26 @@ export function rematchCombat(room: RoomState): RoomState {
     return room;
   }
 
-  const firstPlayer: PlayerId = room.winner ? getOpponent(room.winner) : "captainA";
+  const players = { ...room.players };
+  for (const playerId of PLAYER_IDS) {
+    const player = players[playerId];
+    if (player) {
+      players[playerId] = {
+        ...player,
+        crewDeployed: false
+      };
+    }
+  }
 
   return {
     ...room,
-    phase: "combat",
+    phase: "deploy",
     ships: buildCombatShips(room),
+    players,
     turn: 1,
-    activePlayer: firstPlayer,
+    activePlayer: undefined,
     winner: undefined,
-    log: [
-      ...room.log,
-      "Both captains return to the field for a rematch.",
-      `Combat begins. ${playerLabel(room, firstPlayer)} has the first action.`
-    ].slice(-30)
+    log: [...room.log, "Rematch ready. Deploy your crew before the next battle."].slice(-30)
   };
 }
 
@@ -403,25 +637,66 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
   }
 
   for (const id of PLAYER_IDS) {
-    applyLifeSupportPressure(id, ships[id], entries, label);
+    applySuffocationPressure(id, ships[id], room.turn, entries, label);
   }
 
   const winner = determineWinner(ships);
   const nextLog = [...room.log, ...entries].slice(-30);
+  let nextPlayers = room.players;
 
   if (winner) {
     nextLog.push(`${label(winner)} wins the battle.`);
+    nextPlayers = applyVictoryCredits(room, ships, winner, room.turn, nextLog);
   }
 
   return {
     ...room,
     phase: winner ? "finished" : "combat",
     ships,
+    players: nextPlayers,
     turn: room.turn + 1,
     activePlayer: winner ? undefined : opponent,
     log: nextLog,
     winner
   };
+}
+
+function applyVictoryCredits(
+  room: RoomState,
+  ships: Record<PlayerId, Ship>,
+  winner: PlayerId,
+  turn: number,
+  log: string[]
+): Partial<Record<PlayerId, PlayerState>> {
+  const players = { ...room.players };
+
+  for (const playerId of PLAYER_IDS) {
+    const player = players[playerId];
+    const ship = ships[playerId];
+
+    if (!player || !ship) {
+      continue;
+    }
+
+    if (playerId === winner) {
+      const breakdown = calculateWinnerCredits(ship, turn);
+      log.push(formatVictoryCreditsSummary(playerLabel(room, playerId), breakdown));
+      players[playerId] = {
+        ...ensurePlayerProgress(player),
+        credits: player.credits + breakdown.total
+      };
+      continue;
+    }
+
+    const consolation = calculateLoserCredits(turn);
+    log.push(formatLoserCreditsSummary(playerLabel(room, playerId), consolation));
+    players[playerId] = {
+      ...ensurePlayerProgress(player),
+      credits: player.credits + consolation
+    };
+  }
+
+  return players;
 }
 
 function applyRedeployCommand(
@@ -461,6 +736,9 @@ function applyPreparationCommand(
     const previousHp = system.hp;
     system.hp = clamp(system.hp + repairAmount, 0, system.maxHp);
     ship.hull = clamp(ship.hull + 1, 0, ship.maxHull);
+    if (systemId === "lifeSupport" && system.hp > 0) {
+      clearSuffocation(ship, entries, label(playerId), "Life support restored. Cabin pressure stabilizes.");
+    }
     entries.push(
       `${label(playerId)} repairs ${system.name} from ${previousHp}/${system.maxHp} to ${system.hp}/${system.maxHp}.`
     );
@@ -494,6 +772,9 @@ function applyPreparationCommand(
     const reactorOnline = isSystemOnline(ship, "reactor");
     const patchAmount = reactorOnline ? 3 : 1;
     ship.hull = clamp(ship.hull + patchAmount, 0, ship.maxHull);
+    if (ship.systems.lifeSupport.hp > 0) {
+      clearSuffocation(ship, entries, label(playerId), "Hull breach sealed. Cabin pressure stabilizes.");
+    }
     entries.push(
       `${label(playerId)} patches hull plating from ${previousHull}/${ship.maxHull} to ${ship.hull}/${ship.maxHull}.`
     );
@@ -614,8 +895,10 @@ function applyFireCommand(
   const critRoll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:crit:${defender.hull}`);
   const critChance = getCriticalStrikeChance(attacker);
   const isCritical = critRoll < critChance;
+  const punctureRoll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:puncture:${defender.hull}`);
+  const isHullPuncture = isCritical && punctureRoll < CRITICAL_PUNCTURE_CHANCE;
 
-  if (isCritical) {
+  if (isCritical && !isHullPuncture) {
     hullDamage += CRITICAL_STRIKE_HULL_BONUS;
     systemDamage += CRITICAL_STRIKE_SYSTEM_BONUS;
   }
@@ -624,7 +907,12 @@ function applyFireCommand(
   const { previousHp: previousSystemHp, lostCrew } = damageShipSystem(defender, targetSystem, systemDamage);
   const casualtyEntry = formatCrewCasualtyEntry(defender.systems[targetSystem].name, lostCrew);
 
-  if (isCritical) {
+  if (isHullPuncture) {
+    beginSuffocation(defender, turn, entries);
+    entries.push(
+      `${label(playerId)} lands a ${HULL_PUNCTURE_LOG_MARKER}! ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}). Atmosphere vents into space.`
+    );
+  } else if (isCritical) {
     entries.push(
       `${label(playerId)} lands a ${CRITICAL_STRIKE_LOG_MARKER} on ${defender.systems[targetSystem].name}! ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
     );
@@ -639,24 +927,76 @@ function applyFireCommand(
   }
 }
 
-function applyLifeSupportPressure(
-  playerId: PlayerId,
+function beginSuffocation(
   ship: Ship,
+  turn: number,
   entries: string[],
-  label: (playerId: PlayerId) => string
+  reason?: string
 ) {
-  if (ship.systems.lifeSupport.hp > 0 || ship.hull <= 0) {
+  if (ship.hull <= 0 || ship.oxygenDeadlineTurn !== undefined) {
     return;
   }
 
-  ship.hull = clamp(ship.hull - Math.max(1, 2 - getCrewLifeSupportMitigation(ship)), 0, ship.maxHull);
-  entries.push(`${label(playerId)} loses hull integrity as life support fails.`);
+  ship.oxygenDeadlineTurn = turn + SUFFOCATION_TURNS;
+
+  if (reason) {
+    entries.push(reason);
+  }
+}
+
+function clearSuffocation(
+  ship: Ship,
+  entries: string[],
+  label: string,
+  message: string
+) {
+  if (ship.oxygenDeadlineTurn === undefined) {
+    return;
+  }
+
+  ship.oxygenDeadlineTurn = undefined;
+  entries.push(`${label} ${message}`);
+}
+
+function applySuffocationPressure(
+  playerId: PlayerId,
+  ship: Ship,
+  turn: number,
+  entries: string[],
+  label: (playerId: PlayerId) => string
+) {
+  if (ship.hull <= 0) {
+    return;
+  }
+
+  if (ship.systems.lifeSupport.hp <= 0 && ship.oxygenDeadlineTurn === undefined) {
+    beginSuffocation(
+      ship,
+      turn,
+      entries,
+      `${label(playerId)} life support offline. Crew begins suffocating.`
+    );
+  }
+
+  if (ship.oxygenDeadlineTurn === undefined) {
+    return;
+  }
+
+  if (turn >= ship.oxygenDeadlineTurn) {
+    ship.hull = 0;
+    entries.push(`${label(playerId)} crew suffocates. The ship is lost.`);
+    return;
+  }
+
+  entries.push(
+    `${label(playerId)} crew suffocating — ${ship.oxygenDeadlineTurn - turn} turn(s) until loss.`
+  );
 }
 
 function determineWinner(ships: Record<PlayerId, Ship>): PlayerId | undefined {
   const disabled = PLAYER_IDS.filter((playerId) => {
     const ship = ships[playerId];
-    return ship.hull <= 0 || ship.systems.reactor.hp <= 0 || ship.systems.lifeSupport.hp <= 0;
+    return ship.hull <= 0 || ship.systems.reactor.hp <= 0;
   });
 
   if (disabled.length === 1) {

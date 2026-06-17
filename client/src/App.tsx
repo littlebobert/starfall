@@ -13,14 +13,21 @@ import {
   getAssignedCrewCount,
   getCrewAtStation,
   getShipClass,
+  getSuffocationTurnsRemaining,
+  getUpgradeCost,
+  getUpgradeHpBonus,
+  HULL_PUNCTURE_LOG_MARKER,
+  MAX_UPGRADE_LEVEL,
   MAX_CREW_PER_STATION,
   PLAYER_IDS,
   PlayerId,
+  PlayerStats,
   RecentGame,
   sanitizeCrewAssignments,
   Ship,
   SHIP_CLASSES,
   ShipClassId,
+  SUFFOCATION_TURNS,
   SYSTEM_DEFINITIONS,
   SystemId
 } from "../../shared/game";
@@ -36,15 +43,30 @@ type ClientSocket = Socket<ServerToClientEvents, ClientToServerEvents>;
 interface ServerToClientEvents {
   roomState: (state: ClientRoomState) => void;
   recentGames: (games: RecentGame[]) => void;
+  playerStats: (stats: PlayerStats) => void;
 }
 
 interface ClientToServerEvents {
-  createRoom: (payload: { playerName: string }, ack: (response: Ack) => void) => void;
-  joinRoom: (payload: { roomCode: string; playerName: string }, ack: (response: Ack) => void) => void;
+  createRoom: (
+    payload: { playerName: string; deviceId: string },
+    ack: (response: Ack) => void
+  ) => void;
+  joinRoom: (
+    payload: { roomCode: string; playerName: string; deviceId: string },
+    ack: (response: Ack) => void
+  ) => void;
+  syncPlayerStats: (
+    payload: { deviceId: string; playerName?: string },
+    ack: (response: Ack) => void
+  ) => void;
   startGame: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
   rematch: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
   selectShipClass: (
     payload: { roomCode: string; shipClassId: ShipClassId },
+    ack: (response: Ack) => void
+  ) => void;
+  submitCrewDeployment: (
+    payload: { roomCode: string; crewAssignments: Record<SystemId, number> },
     ack: (response: Ack) => void
   ) => void;
   submitCommand: (
@@ -57,6 +79,10 @@ interface ClientToServerEvents {
     ack: (response: Ack) => void
   ) => void;
   leaveRoom: (payload: { roomCode: string }, ack: (response: Ack) => void) => void;
+  purchaseUpgrade: (
+    payload: { roomCode: string; systemId: SystemId },
+    ack: (response: Ack) => void
+  ) => void;
 }
 
 type NotificationStatus = "unsupported" | "default" | "denied" | "syncing" | "enabled" | "error";
@@ -64,6 +90,45 @@ type NotificationStatus = "unsupported" | "default" | "denied" | "syncing" | "en
 const socketUrl =
   import.meta.env.VITE_SOCKET_URL ??
   (import.meta.env.DEV ? `${window.location.protocol}//${window.location.hostname}:3001` : undefined);
+
+const DEVICE_ID_STORAGE_KEY = "starfall-device-id";
+
+function getOrCreateDeviceId(): string {
+  const existing = window.localStorage.getItem(DEVICE_ID_STORAGE_KEY);
+
+  if (existing) {
+    return existing;
+  }
+
+  const deviceId = crypto.randomUUID();
+  window.localStorage.setItem(DEVICE_ID_STORAGE_KEY, deviceId);
+  return deviceId;
+}
+
+function syncPlayerStats(playerName?: string) {
+  socket.emit(
+    "syncPlayerStats",
+    {
+      deviceId: getOrCreateDeviceId(),
+      playerName: playerName?.trim() || undefined
+    },
+    () => undefined
+  );
+}
+
+function playerHasUpgradeProgress(room: ClientRoomState, playerId: PlayerId): boolean {
+  const player = room.players[playerId];
+
+  if (!player) {
+    return false;
+  }
+
+  if (player.credits > 0) {
+    return true;
+  }
+
+  return Object.values(player.systemUpgrades).some((level) => level > 1);
+}
 
 const systemIds = SYSTEM_DEFINITIONS.map((system) => system.id);
 const socket: ClientSocket = io(socketUrl);
@@ -90,6 +155,7 @@ export default function App() {
   const [error, setError] = useState<string>();
   const [isConnected, setIsConnected] = useState(socket.connected);
   const [recentGames, setRecentGames] = useState<RecentGame[]>([]);
+  const [playerStats, setPlayerStats] = useState<PlayerStats>();
   const [workSafeMode, setWorkSafeMode] = useState(
     () => window.localStorage.getItem("starfall-work-safe") === "true"
   );
@@ -115,6 +181,7 @@ export default function App() {
     function handleConnect() {
       setIsConnected(true);
       setError(undefined);
+      syncPlayerStats(playerName);
     }
 
     function handleDisconnect() {
@@ -137,11 +204,16 @@ export default function App() {
       setRecentGames(nextRecentGames);
     }
 
+    function handlePlayerStats(nextPlayerStats: PlayerStats) {
+      setPlayerStats(nextPlayerStats);
+    }
+
     socket.on("connect", handleConnect);
     socket.on("disconnect", handleDisconnect);
     socket.on("connect_error", handleConnectError);
     socket.on("roomState", handleRoomState);
     socket.on("recentGames", handleRecentGames);
+    socket.on("playerStats", handlePlayerStats);
 
     return () => {
       socket.off("connect", handleConnect);
@@ -149,8 +221,17 @@ export default function App() {
       socket.off("connect_error", handleConnectError);
       socket.off("roomState", handleRoomState);
       socket.off("recentGames", handleRecentGames);
+      socket.off("playerStats", handlePlayerStats);
     };
   }, []);
+
+  useEffect(() => {
+    if (!isConnected || room) {
+      return;
+    }
+
+    syncPlayerStats(playerName);
+  }, [isConnected, playerName, room]);
 
   useEffect(() => {
     if (!isConnected || room || !joinCode || !playerName.trim()) {
@@ -163,7 +244,11 @@ export default function App() {
     }
 
     autoJoinAttemptedKey.current = autoJoinKey;
-    socket.emit("joinRoom", { roomCode: joinCode, playerName: playerName.trim() }, (response) => {
+    socket.emit("joinRoom", {
+      roomCode: joinCode,
+      playerName: playerName.trim(),
+      deviceId: getOrCreateDeviceId()
+    }, (response) => {
       if (!response.ok) {
         window.localStorage.removeItem("starfall-room-code");
       }
@@ -181,7 +266,15 @@ export default function App() {
       window.localStorage.setItem("starfall-room-code", nextRoomCode);
 
       if (!room && playerName.trim()) {
-        socket.emit("joinRoom", { roomCode: nextRoomCode, playerName: playerName.trim() }, handleAck);
+        socket.emit(
+          "joinRoom",
+          {
+            roomCode: nextRoomCode,
+            playerName: playerName.trim(),
+            deviceId: getOrCreateDeviceId()
+          },
+          handleAck
+        );
       }
     }
 
@@ -215,12 +308,19 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!room || !you || room.activePlayer !== you || !room.ships[you]) {
+    if (!room || !you || !room.ships[you]) {
       return;
     }
 
-    setCrewAssignmentsDraft({ ...room.ships[you].crewAssignments });
-  }, [room?.turn, room?.activePlayer, you, room]);
+    if (room.phase === "deploy") {
+      setCrewAssignmentsDraft({ ...room.ships[you].crewAssignments });
+      return;
+    }
+
+    if (room.phase === "combat" && room.activePlayer === you) {
+      setCrewAssignmentsDraft({ ...room.ships[you].crewAssignments });
+    }
+  }, [room?.phase, room?.turn, room?.activePlayer, you, room?.ships]);
 
   function rememberName() {
     const normalizedName = playerName.trim() || "Captain";
@@ -243,12 +343,20 @@ export default function App() {
 
   function createRoom(event: FormEvent) {
     event.preventDefault();
-    socket.emit("createRoom", { playerName: rememberName() }, handleAck);
+    socket.emit(
+      "createRoom",
+      { playerName: rememberName(), deviceId: getOrCreateDeviceId() },
+      handleAck
+    );
   }
 
   function joinRoom(event: FormEvent) {
     event.preventDefault();
-    socket.emit("joinRoom", { roomCode: joinCode, playerName: rememberName() }, handleAck);
+    socket.emit(
+      "joinRoom",
+      { roomCode: joinCode, playerName: rememberName(), deviceId: getOrCreateDeviceId() },
+      handleAck
+    );
   }
 
   function startGame() {
@@ -267,12 +375,32 @@ export default function App() {
     socket.emit("rematch", { roomCode: room.code }, handleAck);
   }
 
+  function purchaseUpgrade(systemId: SystemId) {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit("purchaseUpgrade", { roomCode: room.code, systemId }, handleAck);
+  }
+
   function selectShipClass(shipClassId: ShipClassId) {
     if (!room || !room.you) {
       return;
     }
 
     socket.emit("selectShipClass", { roomCode: room.code, shipClassId }, handleAck);
+  }
+
+  function submitCrewDeployment() {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit(
+      "submitCrewDeployment",
+      { roomCode: room.code, crewAssignments: crewAssignmentsDraft },
+      handleAck
+    );
   }
 
   function submitCommand() {
@@ -303,6 +431,19 @@ export default function App() {
   function leaveRoom() {
     if (!room) {
       return;
+    }
+
+    const shouldConfirm =
+      room.phase !== "lobby" || Boolean(room.you && playerHasUpgradeProgress(room, room.you));
+
+    if (shouldConfirm) {
+      const confirmed = window.confirm(
+        "Leave this room? Your salvage credits and ship upgrades will be reset. Your games and matches won on this device are saved."
+      );
+
+      if (!confirmed) {
+        return;
+      }
     }
 
     socket.emit("leaveRoom", { roomCode: room.code }, handleAck);
@@ -447,7 +588,10 @@ export default function App() {
               <button type="submit">Join room</button>
             </form>
           </div>
-          <RecentGames games={recentGames} />
+          <div className="landing-sidebar">
+            <PlayerRecord stats={playerStats} />
+            <RecentGames games={recentGames} />
+          </div>
         </section>
       ) : (
         <div className="game-layout">
@@ -461,6 +605,39 @@ export default function App() {
 
           {room.phase === "lobby" ? (
             <Lobby room={room} onStart={startGame} onSelectShipClass={selectShipClass} />
+          ) : room.phase === "deploy" ? (
+            <section className="combat-grid">
+              <div className="ship-column">
+                {you ? (
+                  <ShipPanel
+                    title="Your Ship"
+                    playerId={you}
+                    room={room}
+                    interactionHint="Assign crew to each station, then confirm deployment."
+                  />
+                ) : room.ships.captainA ? (
+                  <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
+                ) : null}
+                {opponent ? (
+                  <ShipPanel
+                    title="Enemy Ship"
+                    playerId={opponent}
+                    room={room}
+                    interactionHint="Enemy crew assignments stay hidden until combat."
+                    enemy
+                  />
+                ) : isSpectator && room.ships.captainB ? (
+                  <ShipPanel title="Captain B Ship" playerId="captainB" room={room} spectator enemy />
+                ) : null}
+              </div>
+
+              <DeployPanel
+                room={room}
+                crewAssignments={crewAssignmentsDraft}
+                setCrewAssignments={setCrewAssignmentsDraft}
+                onSubmit={submitCrewDeployment}
+              />
+            </section>
           ) : (
             <section className="combat-grid">
               <div className="ship-column">
@@ -508,7 +685,7 @@ export default function App() {
               <aside className="panel command-panel">
                 <h2>Turn {room.turn}</h2>
                 {room.phase === "finished" ? (
-                  <VictoryBanner room={room} onRematch={rematch} />
+                  <VictoryBanner room={room} onRematch={rematch} onPurchaseUpgrade={purchaseUpgrade} />
                 ) : isSpectator ? (
                   <SpectatorPanel room={room} />
                 ) : (
@@ -638,6 +815,35 @@ function NotificationControl({
   );
 }
 
+function PlayerRecord({ stats }: { stats?: PlayerStats }) {
+  return (
+    <section className="panel player-record">
+      <h2>Your Record</h2>
+      {!stats ? (
+        <p className="muted">Loading captain stats for this device...</p>
+      ) : (
+        <>
+          <p className="muted">Tracked on this browser. Upgrades still reset when you leave a room.</p>
+          <div className="record-grid">
+            <div className="record-stat">
+              <span>Games won</span>
+              <strong>
+                {stats.gamesWon}/{stats.gamesPlayed}
+              </strong>
+            </div>
+            <div className="record-stat">
+              <span>Matches won</span>
+              <strong>
+                {stats.matchesWon}/{stats.matchesPlayed}
+              </strong>
+            </div>
+          </div>
+        </>
+      )}
+    </section>
+  );
+}
+
 function RecentGames({ games }: { games: RecentGame[] }) {
   return (
     <section className="panel recent-games">
@@ -674,7 +880,7 @@ function Lobby({
     <section className="panel lobby">
       <div>
         <h2>Awaiting Captains</h2>
-        <p className="muted">Pick your ship, then start once both captains are connected.</p>
+        <p className="muted">Pick your ship, then begin crew deployment once both captains are connected.</p>
       </div>
       <div className="seat-grid">
         {PLAYER_IDS.map((playerId) => (
@@ -707,9 +913,91 @@ function Lobby({
       )}
 
       <button onClick={onStart} disabled={!canStart}>
-        {canStart ? "Start combat" : hasTwoPlayers ? "Spectators cannot start combat" : "Waiting for second captain"}
+        {canStart ? "Begin crew deployment" : hasTwoPlayers ? "Spectators cannot start deployment" : "Waiting for second captain"}
       </button>
     </section>
+  );
+}
+
+function DeployPanel({
+  room,
+  crewAssignments,
+  setCrewAssignments,
+  onSubmit
+}: {
+  room: ClientRoomState;
+  crewAssignments: Record<SystemId, number>;
+  setCrewAssignments: (value: Record<SystemId, number>) => void;
+  onSubmit: () => void;
+}) {
+  const yourShip = room.you ? room.ships[room.you] : undefined;
+  const assignedCrew = SYSTEM_DEFINITIONS.reduce(
+    (total, system) => total + (crewAssignments[system.id] ?? 0),
+    0
+  );
+  const deploymentReady = Boolean(yourShip && sanitizeCrewAssignments(yourShip, crewAssignments));
+  const youConfirmed = Boolean(room.you && room.players[room.you]?.crewDeployed);
+
+  function adjustCrewAssignment(systemId: SystemId, delta: number) {
+    if (!yourShip) {
+      return;
+    }
+
+    const current = crewAssignments[systemId] ?? 0;
+    const next = current + delta;
+
+    if (next < 0 || next > MAX_CREW_PER_STATION) {
+      return;
+    }
+
+    if (delta > 0 && assignedCrew >= yourShip.crewTotal) {
+      return;
+    }
+
+    setCrewAssignments({
+      ...crewAssignments,
+      [systemId]: next
+    });
+  }
+
+  return (
+    <aside className="panel command-panel deploy-panel">
+      <h2>Deploy Crew</h2>
+      <p className="muted">Station your crew before combat. Both captains must confirm to begin.</p>
+
+      <div className="ready-grid">
+        {PLAYER_IDS.map((playerId) => {
+          const playerName =
+            room.players[playerId]?.name ?? (playerId === "captainA" ? "Captain A" : "Captain B");
+
+          return (
+            <div
+              key={playerId}
+              className={room.players[playerId]?.crewDeployed ? "ready-pill ready" : "ready-pill"}
+            >
+              {playerName}: {room.players[playerId]?.crewDeployed ? "Confirmed" : "Deploying"}
+            </div>
+          );
+        })}
+      </div>
+
+      {room.you && yourShip ? (
+        <>
+          <CrewAssignmentEditor
+            ship={yourShip}
+            assignments={crewAssignments}
+            assignedCrew={assignedCrew}
+            onAdjust={adjustCrewAssignment}
+            disabled={false}
+          />
+          <button type="button" onClick={onSubmit} disabled={!deploymentReady}>
+            {youConfirmed ? "Update deployment" : "Confirm deployment"}
+          </button>
+        </>
+      ) : (
+        <p className="muted">Spectators can watch both captains prepare their crews.</p>
+      )}
+    </aside>
   );
 }
 
@@ -797,6 +1085,8 @@ function ShipPanel({
     return null;
   }
 
+  const suffocationTurns = getSuffocationTurnsRemaining(ship, room.turn);
+
   return (
     <section className="panel ship-panel">
       <div className="ship-heading">
@@ -805,6 +1095,11 @@ function ShipPanel({
           <h2>{ship.name}</h2>
           <p className="muted">{getShipClass(ship.classId).tagline}</p>
           <p className="muted">{room.players[playerId]?.name ?? "Unknown captain"}</p>
+          {suffocationTurns ? (
+            <p className="suffocation-alert">
+              Crew suffocating — {suffocationTurns} turn{suffocationTurns === 1 ? "" : "s"} until loss
+            </p>
+          ) : null}
         </div>
         <div className="ship-heading-stats">
           {!enemy ? (
@@ -1034,8 +1329,9 @@ function CommandControls({
 
       {commandType === "fire" ? (
         <p className="command-help">
-          Accurate weapons fire can land a critical strike for +3 hull and +2 system damage. Sensors raise crit
-          chance; healthy weapons add a little more.
+          Accurate weapons fire can land a critical strike for +3 hull and +2 system damage, or a hull puncture
+          that vents atmosphere. Sensors raise crit chance; healthy weapons add a little more. Life support loss or
+          a puncture gives the crew {SUFFOCATION_TURNS} turns before suffocation.
         </p>
       ) : null}
 
@@ -1066,8 +1362,8 @@ function CommandControls({
 
       {commandType === "repair" ? (
         <p className="command-help">
-          Restores system health and a little hull. Works on offline systems, but crew stationed there are lost
-          permanently when a room goes to 0.
+          Restores system health and a little hull. Repairing life support stops suffocation. Works on offline
+          systems, but crew stationed there are lost permanently when a room goes to 0.
         </p>
       ) : null}
 
@@ -1100,7 +1396,8 @@ function CommandControls({
 
       {commandType === "patch" ? (
         <p className="command-help">
-          Restores hull directly. Works best while Reactor is online; if Reactor is offline, the patch is weaker.
+          Restores hull directly and seals a hull puncture while life support is online. Works best while Reactor
+          is online; if Reactor is offline, the patch is weaker.
         </p>
       ) : null}
     </div>
@@ -1209,19 +1506,26 @@ function TurnStatus({ room }: { room: ClientRoomState }) {
 
 function VictoryBanner({
   room,
-  onRematch
+  onRematch,
+  onPurchaseUpgrade
 }: {
   room: ClientRoomState;
   onRematch: () => void;
+  onPurchaseUpgrade: (systemId: SystemId) => void;
 }) {
+  const yourPlayer = room.you ? room.players[room.you] : undefined;
+
   if (!room.winner) {
     return (
       <div className="victory">
         <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>
-        {room.you ? (
-          <button type="button" onClick={onRematch}>
-            Play again
-          </button>
+        {yourPlayer ? (
+          <>
+            <UpgradeShop player={yourPlayer} onPurchase={onPurchaseUpgrade} />
+            <button type="button" onClick={onRematch}>
+              Play again
+            </button>
+          </>
         ) : (
           <p className="muted">Waiting for a captain to start a rematch.</p>
         )}
@@ -1235,14 +1539,69 @@ function VictoryBanner({
   return (
     <div className="victory">
       <h3>{isYou ? "Victory" : "Defeat"}</h3>
-      <p>{winnerName} controls the field. The losing ship can be salvaged, ransomed, or stripped later.</p>
-      {room.you ? (
-        <button type="button" onClick={onRematch}>
-          Play again
-        </button>
+      <p>{winnerName} controls the field. Spend salvage credits on system upgrades before the next sortie.</p>
+      {yourPlayer ? (
+        <>
+          <UpgradeShop player={yourPlayer} onPurchase={onPurchaseUpgrade} />
+          <button type="button" onClick={onRematch}>
+            Play again
+          </button>
+        </>
       ) : (
         <p className="muted">Waiting for a captain to start a rematch.</p>
       )}
+    </div>
+  );
+}
+
+function UpgradeShop({
+  player,
+  onPurchase
+}: {
+  player: NonNullable<ClientRoomState["players"][PlayerId]>;
+  onPurchase: (systemId: SystemId) => void;
+}) {
+  return (
+    <div className="upgrade-shop">
+      <div className="upgrade-shop-header">
+        <p className="eyebrow">Salvage credits</p>
+        <strong className="credit-balance">{player.credits}</strong>
+      </div>
+      <p className="muted">Upgrade ship systems to level {MAX_UPGRADE_LEVEL}. Each level adds +1 max HP.</p>
+      <div className="upgrade-grid">
+        {SYSTEM_DEFINITIONS.map((system) => {
+          const level = player.systemUpgrades[system.id] ?? 1;
+          const cost = getUpgradeCost(level);
+          const canAfford = cost !== undefined && player.credits >= cost;
+
+          return (
+            <div key={system.id} className="upgrade-row">
+              <div>
+                <strong>{system.name}</strong>
+                <p className="muted">
+                  Level {level}
+                  {level > 1 ? ` (+${getUpgradeHpBonus(level)} HP)` : ""}
+                </p>
+              </div>
+              <div className="upgrade-levels" aria-label={`${system.name} level ${level}`}>
+                {Array.from({ length: MAX_UPGRADE_LEVEL }, (_, index) => (
+                  <span
+                    key={index}
+                    className={index < level ? "upgrade-pip active" : "upgrade-pip"}
+                  />
+                ))}
+              </div>
+              {cost !== undefined ? (
+                <button type="button" disabled={!canAfford} onClick={() => onPurchase(system.id)}>
+                  Upgrade ({cost})
+                </button>
+              ) : (
+                <span className="upgrade-max">Max</span>
+              )}
+            </div>
+          );
+        })}
+      </div>
     </div>
   );
 }
@@ -1256,7 +1615,16 @@ function BattleLog({ entries }: { entries: string[] }) {
           .slice()
           .reverse()
           .map((entry, index) => (
-            <li key={`${entry}-${index}`} className={entry.includes(CRITICAL_STRIKE_LOG_MARKER) ? "critical" : undefined}>
+            <li
+              key={`${entry}-${index}`}
+              className={
+                entry.includes(CRITICAL_STRIKE_LOG_MARKER) || entry.includes(HULL_PUNCTURE_LOG_MARKER)
+                  ? "critical"
+                  : entry.includes("suffocat")
+                    ? "suffocation"
+                    : undefined
+              }
+            >
               {entry}
             </li>
           ))}
