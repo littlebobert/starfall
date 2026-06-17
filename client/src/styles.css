@@ -127,24 +127,35 @@ p {
 }
 
 .landing-grid,
-.combat-grid,
+.combat-stage,
 .seat-grid {
   display: grid;
   gap: 1rem;
 }
 
+.combat-left-rail {
+  display: grid;
+  gap: 1rem;
+}
+
 .landing-grid {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  width: fit-content;
+  max-width: 100%;
+  grid-template-columns: repeat(2, minmax(14rem, max-content));
 }
 
 .landing-layout {
   display: grid;
   gap: 0.75rem;
+  justify-items: start;
+  align-content: start;
 }
 
 .landing-sidebar {
   display: grid;
   gap: 0.75rem;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .landing-layout .stack {
@@ -158,12 +169,15 @@ p {
 .player-record {
   display: grid;
   gap: 0.75rem;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .record-grid {
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(2, auto);
   gap: 0.75rem;
+  width: fit-content;
 }
 
 .record-stat {
@@ -277,9 +291,9 @@ p {
   width: fit-content;
 }
 
-.combat-grid {
+.combat-stage {
   grid-template-columns: minmax(0, 1fr) 360px;
-  align-items: start;
+  align-items: stretch;
 }
 
 .ship-column {
@@ -305,7 +319,7 @@ p {
     "engines shields weapons"
     "sensors lifeSupport weapons";
   grid-template-columns: 1fr 1fr 1.1fr;
-  grid-template-rows: repeat(2, minmax(64px, 1fr));
+  grid-template-rows: repeat(2, minmax(52px, auto));
   gap: 0.35rem;
   overflow: visible;
   border: 1px solid rgba(125, 211, 252, 0.2);
@@ -846,6 +860,8 @@ button.crew-stepper {
 .recent-games {
   display: grid;
   gap: 0.75rem;
+  width: fit-content;
+  max-width: 100%;
 }
 
 .recent-games ul {
@@ -1152,8 +1168,6 @@ button.ship-class-card:hover:not(.selected) {
   .landing-grid {
     align-self: start;
     align-items: start;
-    max-width: 980px;
-    margin: 0 auto;
     padding: 0.65rem;
   }
 
@@ -1177,10 +1191,11 @@ button.ship-class-card:hover:not(.selected) {
     padding-inline: 1.2rem;
   }
 
-  .command-panel {
+  .command-panel,
+  .deploy-panel {
     position: static;
     grid-column: 2;
-    grid-row: 2 / 4;
+    grid-row: 1;
     align-self: stretch;
     align-content: stretch;
     gap: 0.65rem;
@@ -1190,9 +1205,23 @@ button.ship-class-card:hover:not(.selected) {
   }
 
   .game-layout {
-    grid-template-columns: minmax(0, 1fr) 320px;
-    grid-template-rows: auto auto minmax(0, 1fr) clamp(9rem, 22vh, 14rem);
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto minmax(0, 1fr);
     gap: 0.6rem;
+    min-height: 0;
+  }
+
+  .combat-stage {
+    grid-column: 1 / -1;
+    grid-template-columns: minmax(0, 1fr) 320px;
+    grid-template-rows: minmax(0, 1fr);
+    min-height: 0;
+  }
+
+  .combat-left-rail {
+    grid-column: 1;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    gap: 0.45rem;
     min-height: 0;
   }
 
@@ -1229,17 +1258,11 @@ button.ship-class-card:hover:not(.selected) {
     font-size: 0.65rem;
   }
 
-  .combat-grid {
-    display: contents;
-  }
-
   .ship-column {
-    grid-column: 1;
-    grid-row: 2 / 4;
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.6rem;
-    min-height: 0;
+    gap: 0.5rem;
+    align-content: start;
   }
 
   .ship-panel {
@@ -1267,7 +1290,7 @@ button.ship-class-card:hover:not(.selected) {
       "engines shields weapons"
       "sensors lifeSupport weapons";
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(56px, 1fr));
+    grid-template-rows: repeat(2, minmax(44px, auto));
     gap: 0.25rem;
     padding: 0.55rem;
   }
@@ -1305,22 +1328,12 @@ button.ship-class-card:hover:not(.selected) {
     height: 0.42rem;
   }
 
-  .game-layout-postgame {
-    grid-template-rows: auto auto minmax(0, 1fr) clamp(9rem, 22vh, 14rem);
-  }
-
   .command-panel-postgame {
-    grid-row: 2 / 4;
-    align-self: stretch;
-    min-height: 0;
     max-height: 100%;
-    overflow: hidden;
   }
 
-  .game-layout-postgame .battle-log {
-    grid-row: 4;
-    align-self: stretch;
-    min-height: 0;
+  .command-panel-scroll {
+    overflow-y: visible;
   }
 
   .command-panel h2 {
@@ -1357,8 +1370,6 @@ button.ship-class-card:hover:not(.selected) {
   }
 
   .battle-log {
-    grid-column: 2;
-    grid-row: 4;
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
     min-height: 0;
@@ -1377,10 +1388,8 @@ button.ship-class-card:hover:not(.selected) {
   }
 
   .chat-panel {
-    grid-column: 1;
-    grid-row: 4;
-    gap: 0.45rem;
-    padding: 0.65rem;
+    gap: 0.4rem;
+    padding: 0.55rem;
     min-height: 0;
   }
 
@@ -1406,7 +1415,7 @@ button.ship-class-card:hover:not(.selected) {
 
 @media (max-width: 860px) {
   .landing-grid,
-  .combat-grid,
+  .combat-stage,
   .seat-grid {
     grid-template-columns: 1fr;
   }

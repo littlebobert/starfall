@@ -193,7 +193,6 @@ export default function App() {
   const [notificationStatus, setNotificationStatus] = useState<NotificationStatus>(getInitialNotificationStatus);
   const [notificationError, setNotificationError] = useState<string>();
   const lastSyncedNotificationKey = useRef<string | undefined>(undefined);
-  const autoJoinAttemptedKey = useRef<string | undefined>(undefined);
   const leavingRoomRef = useRef(false);
 
   useEffect(() => {
@@ -255,28 +254,6 @@ export default function App() {
 
     syncPlayerStats(playerName);
   }, [isConnected, playerName, room]);
-
-  useEffect(() => {
-    if (!isConnected || room || !joinCode || !playerName.trim()) {
-      return;
-    }
-
-    const autoJoinKey = `${joinCode}:${playerName.trim()}`;
-    if (autoJoinAttemptedKey.current === autoJoinKey) {
-      return;
-    }
-
-    autoJoinAttemptedKey.current = autoJoinKey;
-    socket.emit("joinRoom", {
-      roomCode: joinCode,
-      playerName: playerName.trim(),
-      deviceId: getOrCreateDeviceId()
-    }, (response) => {
-      if (!response.ok) {
-        window.localStorage.removeItem("starfall-room-code");
-      }
-    });
-  }, [isConnected, joinCode, playerName, room]);
 
   useEffect(() => {
     function handleServiceWorkerMessage(event: MessageEvent) {
@@ -471,7 +448,8 @@ export default function App() {
     }
 
     const shouldConfirm =
-      room.phase !== "lobby" || Boolean(room.you && playerHasUpgradeProgress(room, room.you));
+      !isSpectator &&
+      (room.phase !== "lobby" || Boolean(room.you && playerHasUpgradeProgress(room, room.you)));
 
     if (shouldConfirm) {
       const confirmed = window.confirm(
@@ -493,7 +471,6 @@ export default function App() {
     leavingRoomRef.current = true;
     setRoom(undefined);
     setJoinCode("");
-    autoJoinAttemptedKey.current = undefined;
     window.localStorage.removeItem("starfall-room-code");
     window.history.replaceState(null, "", window.location.pathname);
   }
@@ -650,139 +627,145 @@ export default function App() {
           />
 
           {room.phase === "lobby" ? (
-            <Lobby room={room} onStart={startGame} onSelectShipClass={selectShipClass} />
-          ) : room.phase === "deploy" ? (
-            <section className="combat-grid">
-              <div className="ship-column">
-                {you ? (
-                  <ShipPanel
-                    title="Your Ship"
-                    playerId={you}
-                    room={room}
-                    interactionHint="Assign crew to each station, then confirm deployment."
-                  />
-                ) : room.ships.captainA ? (
-                  <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
-                ) : null}
-                {opponent ? (
-                  <ShipPanel
-                    title="Enemy Ship"
-                    playerId={opponent}
-                    room={room}
-                    interactionHint="Enemy crew assignments stay hidden until combat."
-                    enemy
-                  />
-                ) : isSpectator && room.ships.captainB ? (
-                  <ShipPanel title="Captain B Ship" playerId="captainB" room={room} spectator enemy />
-                ) : null}
-              </div>
-
-              <DeployPanel
-                room={room}
-                crewAssignments={crewAssignmentsDraft}
-                setCrewAssignments={setCrewAssignmentsDraft}
-                onSubmit={submitCrewDeployment}
-              />
-            </section>
+            <>
+              <Lobby room={room} onStart={startGame} onSelectShipClass={selectShipClass} />
+              <BattleLog entries={room.log} />
+              <ChatPanel room={room} />
+            </>
           ) : (
-            <section className="combat-grid">
-              <div className="ship-column">
-                {you ? (
-                  <ShipPanel
-                    title="Your Ship"
-                    playerId={you}
-                    room={room}
-                    selectedSystem={commandType === "repair" ? repairSystem : undefined}
-                    onSelectSystem={(systemId) => {
-                      setCommandType("repair");
-                      setRepairSystem(systemId);
-                    }}
-                    interactionHint="Click one of your rooms to set a repair order."
-                  />
-                ) : room.ships.captainA ? (
-                  <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
-                ) : null}
-                {opponent ? (
-                  <ShipPanel
-                    title="Enemy Ship"
-                    playerId={opponent}
-                    room={room}
-                    selectedSystem={commandType === "fire" ? targetSystem : undefined}
-                    onSelectSystem={(systemId) => {
-                      setCommandType("fire");
-                      setTargetSystem(systemId);
-                    }}
-                    interactionHint="Click an enemy room to set a fire order."
-                    enemy
-                  />
-                ) : isSpectator && room.ships.captainB ? (
-                  <ShipPanel title="Captain B Ship" playerId="captainB" room={room} spectator enemy />
-                ) : null}
+            <section
+              className={
+                room.phase === "finished" ? "combat-stage combat-stage-postgame" : "combat-stage"
+              }
+            >
+              <div className="combat-left-rail">
+                <div className="ship-column">
+                  {you ? (
+                    <ShipPanel
+                      title="Your Ship"
+                      playerId={you}
+                      room={room}
+                      selectedSystem={
+                        room.phase === "combat" && commandType === "repair" ? repairSystem : undefined
+                      }
+                      onSelectSystem={
+                        room.phase === "combat"
+                          ? (systemId) => {
+                              setCommandType("repair");
+                              setRepairSystem(systemId);
+                            }
+                          : undefined
+                      }
+                      interactionHint={
+                        room.phase === "deploy"
+                          ? "Assign crew to each station, then confirm deployment."
+                          : "Click one of your rooms to set a repair order."
+                      }
+                    />
+                  ) : room.ships.captainA ? (
+                    <ShipPanel title="Captain A Ship" playerId="captainA" room={room} spectator />
+                  ) : null}
+                  {opponent ? (
+                    <ShipPanel
+                      title="Enemy Ship"
+                      playerId={opponent}
+                      room={room}
+                      selectedSystem={
+                        room.phase === "combat" && commandType === "fire" ? targetSystem : undefined
+                      }
+                      onSelectSystem={
+                        room.phase === "combat"
+                          ? (systemId) => {
+                              setCommandType("fire");
+                              setTargetSystem(systemId);
+                            }
+                          : undefined
+                      }
+                      interactionHint={
+                        room.phase === "deploy"
+                          ? "Enemy crew assignments stay hidden until combat."
+                          : "Click an enemy room to set a fire order."
+                      }
+                      enemy
+                    />
+                  ) : isSpectator && room.ships.captainB ? (
+                    <ShipPanel title="Captain B Ship" playerId="captainB" room={room} spectator enemy />
+                  ) : null}
+                </div>
+
+                <BattleLog entries={room.log} />
+                <ChatPanel room={room} />
               </div>
 
-              <aside
-                className={
-                  room.phase === "finished"
-                    ? "panel command-panel command-panel-postgame"
-                    : "panel command-panel"
-                }
-              >
-                <h2>Turn {room.turn}</h2>
-                {room.phase === "finished" ? (
-                  <VictoryBanner
-                    room={room}
-                    onRematch={rematch}
-                    onPurchaseUpgrade={purchaseUpgrade}
-                    onPurchaseConsumable={purchaseConsumable}
-                    onRefundUpgrade={refundUpgrade}
-                  />
-                ) : isSpectator ? (
-                  <SpectatorPanel room={room} />
-                ) : (
-                  <div className="command-panel-combat">
-                    <div className="command-panel-scroll">
-                      <p className="muted">
-                        {isYourTurn
-                          ? "Your turn. Choose one action; it resolves immediately."
-                          : "Plan your next action while you wait. It won't submit until your turn."}
-                      </p>
-                      <CommandControls
-                        commandType={commandType}
-                        setCommandType={setCommandType}
-                        targetSystem={targetSystem}
-                        setTargetSystem={setTargetSystem}
-                        repairSystem={repairSystem}
-                        setRepairSystem={setRepairSystem}
-                        crewAssignments={crewAssignmentsDraft}
-                        setCrewAssignments={setCrewAssignmentsDraft}
-                        yourShip={yourShip}
-                        yourPlayer={room.you ? room.players[room.you] : undefined}
-                        disabled={false}
-                      />
+              {room.phase === "deploy" ? (
+                <DeployPanel
+                  room={room}
+                  crewAssignments={crewAssignmentsDraft}
+                  setCrewAssignments={setCrewAssignmentsDraft}
+                  onSubmit={submitCrewDeployment}
+                />
+              ) : (
+                <aside
+                  className={
+                    room.phase === "finished"
+                      ? "panel command-panel command-panel-postgame"
+                      : "panel command-panel"
+                  }
+                >
+                  <h2>Turn {room.turn}</h2>
+                  {room.phase === "finished" ? (
+                    <VictoryBanner
+                      room={room}
+                      onRematch={rematch}
+                      onPurchaseUpgrade={purchaseUpgrade}
+                      onPurchaseConsumable={purchaseConsumable}
+                      onRefundUpgrade={refundUpgrade}
+                    />
+                  ) : isSpectator ? (
+                    <SpectatorPanel room={room} />
+                  ) : (
+                    <div className="command-panel-combat">
+                      <div className="command-panel-scroll">
+                        <p className="muted">
+                          {isYourTurn
+                            ? "Your turn. Choose one action; it resolves immediately."
+                            : "Plan your next action while you wait. It won't submit until your turn."}
+                        </p>
+                        <CommandControls
+                          commandType={commandType}
+                          setCommandType={setCommandType}
+                          targetSystem={targetSystem}
+                          setTargetSystem={setTargetSystem}
+                          repairSystem={repairSystem}
+                          setRepairSystem={setRepairSystem}
+                          crewAssignments={crewAssignmentsDraft}
+                          setCrewAssignments={setCrewAssignmentsDraft}
+                          yourShip={yourShip}
+                          yourPlayer={room.you ? room.players[room.you] : undefined}
+                          disabled={false}
+                        />
+                      </div>
+                      <button
+                        type="button"
+                        className="command-action"
+                        onClick={submitCommand}
+                        disabled={!isYourTurn || (commandType === "redeploy" && !redeployReady)}
+                      >
+                        {!isYourTurn
+                          ? "Waiting for your turn"
+                          : commandType === "redeploy"
+                            ? redeployReady
+                              ? "Confirm redeploy"
+                              : "Adjust crew to redeploy"
+                            : "Take action"}
+                      </button>
                     </div>
-                    <button
-                      type="button"
-                      className="command-action"
-                      onClick={submitCommand}
-                      disabled={!isYourTurn || (commandType === "redeploy" && !redeployReady)}
-                    >
-                      {!isYourTurn
-                        ? "Waiting for your turn"
-                        : commandType === "redeploy"
-                          ? redeployReady
-                            ? "Confirm redeploy"
-                            : "Adjust crew to redeploy"
-                          : "Take action"}
-                    </button>
-                  </div>
-                )}
-                <TurnStatus room={room} />
-              </aside>
+                  )}
+                  <TurnStatus room={room} />
+                </aside>
+              )}
             </section>
           )}
-
-          <BattleLog entries={room.log} />
-          <ChatPanel room={room} />
         </div>
       )}
     </main>
