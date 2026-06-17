@@ -6,6 +6,7 @@ import { fileURLToPath } from "node:url";
 import { Server, Socket } from "socket.io";
 import webpush from "web-push";
 import {
+  appendToBattleLog,
   beginDeploy,
   canRematch,
   canStartCombat,
@@ -19,12 +20,14 @@ import {
   finalizeSessionMatch,
   isShipClassId,
   isValidDeviceId,
+  isConsumableId,
   launchCombat,
   bothCrewDeployed,
   PlayerId,
   PLAYER_IDS,
   PlayerStats,
   purchaseSystemUpgrade,
+  purchaseConsumableCharge,
   RecentGame,
   recordSessionGameWin,
   rematchCombat,
@@ -93,6 +96,10 @@ interface PurchaseUpgradePayload extends RoomPayload {
   systemId?: SystemId;
 }
 
+interface PurchaseConsumablePayload extends RoomPayload {
+  consumableId?: string;
+}
+
 interface SocketData {
   roomCode?: string;
   playerId?: PlayerId;
@@ -116,6 +123,7 @@ interface ClientToServerEvents {
   ) => void;
   leaveRoom: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   purchaseUpgrade: (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => void;
+  purchaseConsumable: (payload: PurchaseConsumablePayload, ack?: (response: ClientAck) => void) => void;
   syncPlayerStats: (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => void;
 }
 
@@ -279,7 +287,7 @@ io.on("connection", (socket) => {
       name: playerName,
       connected: true
     };
-    room.log = [...room.log, `${playerName} is watching the battle.`].slice(-30);
+    room.log = appendToBattleLog(room.log, `${playerName} is watching the battle.`);
 
     await joinSpectatorSocketToRoom(socket, roomCode, spectatorId, playerName);
     ack?.({ ok: true, roomCode });
@@ -439,6 +447,40 @@ io.on("connection", (socket) => {
     }
   );
 
+  socket.on(
+    "purchaseConsumable",
+    async (payload: PurchaseConsumablePayload, ack?: (response: ClientAck) => void) => {
+      const room = getSocketRoom(socket, payload.roomCode);
+      const playerId = socket.data.playerId;
+      const consumableId = payload.consumableId?.trim();
+
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: "Join a room before purchasing supplies." });
+        return;
+      }
+
+      if (room.phase !== "finished") {
+        ack?.({ ok: false, error: "Supplies can only be purchased after a battle." });
+        return;
+      }
+
+      if (!consumableId || !isConsumableId(consumableId)) {
+        ack?.({ ok: false, error: "Choose a valid supply to purchase." });
+        return;
+      }
+
+      const updatedRoom = purchaseConsumableCharge(room, playerId, consumableId);
+      if (updatedRoom === room) {
+        ack?.({ ok: false, error: "Not enough credits or supply stock is full." });
+        return;
+      }
+
+      rooms.set(room.code, updatedRoom);
+      ack?.({ ok: true, roomCode: room.code });
+      await emitRoom(room.code);
+    }
+  );
+
   socket.on("submitCommand", async (payload: SubmitCommandPayload, ack?: (response: ClientAck) => void) => {
     const room = getSocketRoom(socket, payload.roomCode);
     const playerId = socket.data.playerId;
@@ -534,17 +576,17 @@ io.on("connection", (socket) => {
         ...room.players[playerId],
         connected: false
       };
-      room.log = [
-        ...room.log,
+      room.log = appendToBattleLog(
+        room.log,
         `${room.players[playerId]?.name ?? "A captain"} disconnected. They can rejoin with the room code.`
-      ].slice(-30);
+      );
       await emitRoom(roomCode);
     }
 
     if (roomCode && room && spectatorId && room.spectators[spectatorId]) {
       const spectatorName = room.spectators[spectatorId].name;
       delete room.spectators[spectatorId];
-      room.log = [...room.log, `${spectatorName} stopped watching.`].slice(-30);
+      room.log = appendToBattleLog(room.log, `${spectatorName} stopped watching.`);
       await emitRoom(roomCode);
     }
   });
@@ -603,10 +645,10 @@ async function leaveCurrentRoom(socket: StarfallSocket) {
 
     if (matchResult) {
       recordMatchResult(matchResult);
-      roomAfterMatch.log = [
-        ...roomAfterMatch.log,
+      roomAfterMatch.log = appendToBattleLog(
+        roomAfterMatch.log,
         `${matchResult.winnerName} wins the room match ${winsA}-${winsB} before departure.`
-      ].slice(-30);
+      );
       await notifyPlayerStats([matchResult.winnerDeviceId, matchResult.loserDeviceId]);
     }
 
@@ -617,16 +659,16 @@ async function leaveCurrentRoom(socket: StarfallSocket) {
       ...room.players[playerId]!,
       connected: false
     });
-    room.log = [
-      ...room.log,
+    room.log = appendToBattleLog(
+      room.log,
       `${room.players[playerId]?.name ?? "A captain"} left the room.`
-    ].slice(-30);
+    );
   }
 
   if (room && spectatorId && room.spectators[spectatorId]) {
     const spectatorName = room.spectators[spectatorId].name;
     delete room.spectators[spectatorId];
-    room.log = [...room.log, `${spectatorName} stopped watching.`].slice(-30);
+    room.log = appendToBattleLog(room.log, `${spectatorName} stopped watching.`);
   }
 
   if (roomCode) {

@@ -4,6 +4,9 @@ import { io, Socket } from "socket.io-client";
 import {
   ClientRoomState,
   CombatCommand,
+  CONSUMABLES,
+  canPurchaseConsumable,
+  BATTLE_END_LOG_MARKER,
   CRITICAL_STRIKE_LOG_MARKER,
   crewAssignmentsEqual,
   DEFAULT_SHIP_CLASS_ID,
@@ -18,6 +21,7 @@ import {
   getUpgradeHpBonus,
   HULL_PUNCTURE_LOG_MARKER,
   MAX_UPGRADE_LEVEL,
+  MAX_CONSUMABLE_STOCK,
   MAX_CREW_PER_STATION,
   PLAYER_IDS,
   PlayerId,
@@ -28,8 +32,11 @@ import {
   SHIP_CLASSES,
   ShipClassId,
   SUFFOCATION_TURNS,
+  STARTING_BREACH_SEALS,
+  STARTING_SHIELD_BRACES,
   SYSTEM_DEFINITIONS,
-  SystemId
+  SystemId,
+  type ConsumableId
 } from "../../shared/game";
 
 interface Ack {
@@ -83,6 +90,10 @@ interface ClientToServerEvents {
     payload: { roomCode: string; systemId: SystemId },
     ack: (response: Ack) => void
   ) => void;
+  purchaseConsumable: (
+    payload: { roomCode: string; consumableId: ConsumableId },
+    ack: (response: Ack) => void
+  ) => void;
 }
 
 type NotificationStatus = "unsupported" | "default" | "denied" | "syncing" | "enabled" | "error";
@@ -124,6 +135,10 @@ function playerHasUpgradeProgress(room: ClientRoomState, playerId: PlayerId): bo
   }
 
   if (player.credits > 0) {
+    return true;
+  }
+
+  if (player.shieldBraces > STARTING_SHIELD_BRACES || player.breachSeals > STARTING_BREACH_SEALS) {
     return true;
   }
 
@@ -383,6 +398,14 @@ export default function App() {
     socket.emit("purchaseUpgrade", { roomCode: room.code, systemId }, handleAck);
   }
 
+  function purchaseConsumable(consumableId: ConsumableId) {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit("purchaseConsumable", { roomCode: room.code, consumableId }, handleAck);
+  }
+
   function selectShipClass(shipClassId: ShipClassId) {
     if (!room || !room.you) {
       return;
@@ -438,7 +461,7 @@ export default function App() {
 
     if (shouldConfirm) {
       const confirmed = window.confirm(
-        "Leave this room? Your salvage credits and ship upgrades will be reset. Your games and matches won on this device are saved."
+        "Leave this room? Your salvage credits, ship upgrades, and purchased supplies will be reset. Your games and matches won on this device are saved."
       );
 
       if (!confirmed) {
@@ -594,7 +617,7 @@ export default function App() {
           </div>
         </section>
       ) : (
-        <div className="game-layout">
+        <div className={room.phase === "finished" ? "game-layout game-layout-postgame" : "game-layout"}>
           <RoomHeader
             room={room}
             onLeave={leaveRoom}
@@ -682,10 +705,21 @@ export default function App() {
                 ) : null}
               </div>
 
-              <aside className="panel command-panel">
+              <aside
+                className={
+                  room.phase === "finished"
+                    ? "panel command-panel command-panel-postgame"
+                    : "panel command-panel"
+                }
+              >
                 <h2>Turn {room.turn}</h2>
                 {room.phase === "finished" ? (
-                  <VictoryBanner room={room} onRematch={rematch} onPurchaseUpgrade={purchaseUpgrade} />
+                  <VictoryBanner
+                    room={room}
+                    onRematch={rematch}
+                    onPurchaseUpgrade={purchaseUpgrade}
+                    onPurchaseConsumable={purchaseConsumable}
+                  />
                 ) : isSpectator ? (
                   <SpectatorPanel room={room} />
                 ) : (
@@ -707,6 +741,7 @@ export default function App() {
                       crewAssignments={crewAssignmentsDraft}
                       setCrewAssignments={setCrewAssignmentsDraft}
                       yourShip={yourShip}
+                      yourPlayer={room.you ? room.players[room.you] : undefined}
                       disabled={!isYourTurn}
                     />
                     <button
@@ -1250,6 +1285,7 @@ function CommandControls({
   crewAssignments,
   setCrewAssignments,
   yourShip,
+  yourPlayer,
   disabled
 }: {
   commandType: CombatCommand["type"];
@@ -1263,12 +1299,16 @@ function CommandControls({
   crewAssignments: Record<SystemId, number>;
   setCrewAssignments: (value: Record<SystemId, number>) => void;
   yourShip?: Ship;
+  yourPlayer?: NonNullable<ClientRoomState["players"][PlayerId]>;
   disabled: boolean;
 }) {
   const assignedCrew = SYSTEM_DEFINITIONS.reduce(
     (total, system) => total + (crewAssignments[system.id] ?? 0),
     0
   );
+  const suffocating = Boolean(yourShip?.oxygenDeadlineTurn !== undefined && yourShip.hull > 0);
+  const shieldBraces = yourPlayer?.shieldBraces ?? 0;
+  const breachSeals = yourPlayer?.breachSeals ?? 0;
 
   function adjustCrewAssignment(systemId: SystemId, delta: number) {
     if (!yourShip) {
@@ -1294,6 +1334,13 @@ function CommandControls({
 
   return (
     <div className="stack">
+      {yourPlayer ? (
+        <div className="consumable-stock">
+          <span>Shield braces: {shieldBraces}</span>
+          <span>Breach seals: {breachSeals}</span>
+        </div>
+      ) : null}
+
       <label>
         Command
         <select
@@ -1394,10 +1441,18 @@ function CommandControls({
         </p>
       ) : null}
 
+      {commandType === "brace" ? (
+        <p className="command-help">
+          Spends 1 shield brace charge to reinforce shields. Buy more in the post-battle shop.
+          {shieldBraces <= 0 ? " You are out of brace charges." : ""}
+        </p>
+      ) : null}
+
       {commandType === "patch" ? (
         <p className="command-help">
-          Restores hull directly and seals a hull puncture while life support is online. Works best while Reactor
-          is online; if Reactor is offline, the patch is weaker.
+          Restores hull directly. If the crew is suffocating, spends 1 breach seal kit to stop atmosphere loss.
+          Buy more in the post-battle shop. Works best while Reactor is online.
+          {suffocating && breachSeals <= 0 ? " You are out of breach seal kits." : ""}
         </p>
       ) : null}
     </div>
@@ -1507,22 +1562,32 @@ function TurnStatus({ room }: { room: ClientRoomState }) {
 function VictoryBanner({
   room,
   onRematch,
-  onPurchaseUpgrade
+  onPurchaseUpgrade,
+  onPurchaseConsumable
 }: {
   room: ClientRoomState;
   onRematch: () => void;
   onPurchaseUpgrade: (systemId: SystemId) => void;
+  onPurchaseConsumable: (consumableId: ConsumableId) => void;
 }) {
   const yourPlayer = room.you ? room.players[room.you] : undefined;
 
   if (!room.winner) {
     return (
-      <div className="victory">
-        <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>
+      <div className="victory victory-postgame">
+        <div className="victory-summary">
+          <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>
+        </div>
         {yourPlayer ? (
           <>
-            <UpgradeShop player={yourPlayer} onPurchase={onPurchaseUpgrade} />
-            <button type="button" onClick={onRematch}>
+            <div className="upgrade-shop-scroll">
+              <UpgradeShop
+                player={yourPlayer}
+                onPurchaseUpgrade={onPurchaseUpgrade}
+                onPurchaseConsumable={onPurchaseConsumable}
+              />
+            </div>
+            <button type="button" className="victory-action" onClick={onRematch}>
               Play again
             </button>
           </>
@@ -1537,13 +1602,21 @@ function VictoryBanner({
   const isYou = room.winner === room.you;
 
   return (
-    <div className="victory">
-      <h3>{isYou ? "Victory" : "Defeat"}</h3>
-      <p>{winnerName} controls the field. Spend salvage credits on system upgrades before the next sortie.</p>
+    <div className="victory victory-postgame">
+      <div className="victory-summary">
+        <h3>{isYou ? "Victory" : "Defeat"}</h3>
+        <p>{winnerName} controls the field. Spend salvage credits on system upgrades before the next sortie.</p>
+      </div>
       {yourPlayer ? (
         <>
-          <UpgradeShop player={yourPlayer} onPurchase={onPurchaseUpgrade} />
-          <button type="button" onClick={onRematch}>
+          <div className="upgrade-shop-scroll">
+            <UpgradeShop
+              player={yourPlayer}
+              onPurchaseUpgrade={onPurchaseUpgrade}
+              onPurchaseConsumable={onPurchaseConsumable}
+            />
+          </div>
+          <button type="button" className="victory-action" onClick={onRematch}>
             Play again
           </button>
         </>
@@ -1556,10 +1629,12 @@ function VictoryBanner({
 
 function UpgradeShop({
   player,
-  onPurchase
+  onPurchaseUpgrade,
+  onPurchaseConsumable
 }: {
   player: NonNullable<ClientRoomState["players"][PlayerId]>;
-  onPurchase: (systemId: SystemId) => void;
+  onPurchaseUpgrade: (systemId: SystemId) => void;
+  onPurchaseConsumable: (consumableId: ConsumableId) => void;
 }) {
   return (
     <div className="upgrade-shop">
@@ -1567,6 +1642,31 @@ function UpgradeShop({
         <p className="eyebrow">Salvage credits</p>
         <strong className="credit-balance">{player.credits}</strong>
       </div>
+
+      <div className="consumable-shop">
+        <p className="eyebrow">Supplies</p>
+        <div className="upgrade-grid">
+          {CONSUMABLES.map((item) => {
+            const stock = item.id === "shieldBrace" ? player.shieldBraces : player.breachSeals;
+            const canBuy = canPurchaseConsumable(player, item.id);
+
+            return (
+              <div key={item.id} className="upgrade-row consumable-row">
+                <div>
+                  <strong>{item.name}</strong>
+                  <p className="muted">
+                    {item.description} Stock: {stock}/{MAX_CONSUMABLE_STOCK}
+                  </p>
+                </div>
+                <button type="button" disabled={!canBuy} onClick={() => onPurchaseConsumable(item.id)}>
+                  Buy ({item.cost})
+                </button>
+              </div>
+            );
+          })}
+        </div>
+      </div>
+
       <p className="muted">Upgrade ship systems to level {MAX_UPGRADE_LEVEL}. Each level adds +1 max HP.</p>
       <div className="upgrade-grid">
         {SYSTEM_DEFINITIONS.map((system) => {
@@ -1592,7 +1692,7 @@ function UpgradeShop({
                 ))}
               </div>
               {cost !== undefined ? (
-                <button type="button" disabled={!canAfford} onClick={() => onPurchase(system.id)}>
+                <button type="button" disabled={!canAfford} onClick={() => onPurchaseUpgrade(system.id)}>
                   Upgrade ({cost})
                 </button>
               ) : (
@@ -1607,10 +1707,21 @@ function UpgradeShop({
 }
 
 function BattleLog({ entries }: { entries: string[] }) {
+  const listRef = useRef<HTMLOListElement>(null);
+
+  useEffect(() => {
+    const list = listRef.current;
+    if (!list) {
+      return;
+    }
+
+    list.scrollTop = 0;
+  }, [entries.length, entries[entries.length - 1]]);
+
   return (
     <section className="panel battle-log">
       <h2>Battle Log</h2>
-      <ol>
+      <ol ref={listRef}>
         {entries
           .slice()
           .reverse()
@@ -1618,11 +1729,13 @@ function BattleLog({ entries }: { entries: string[] }) {
             <li
               key={`${entry}-${index}`}
               className={
-                entry.includes(CRITICAL_STRIKE_LOG_MARKER) || entry.includes(HULL_PUNCTURE_LOG_MARKER)
-                  ? "critical"
-                  : entry.includes("suffocat")
-                    ? "suffocation"
-                    : undefined
+                entry.includes(BATTLE_END_LOG_MARKER)
+                  ? "battle-end"
+                  : entry.includes(CRITICAL_STRIKE_LOG_MARKER) || entry.includes(HULL_PUNCTURE_LOG_MARKER)
+                    ? "critical"
+                    : entry.includes("suffocat")
+                      ? "suffocation"
+                      : undefined
               }
             >
               {entry}
@@ -1631,6 +1744,13 @@ function BattleLog({ entries }: { entries: string[] }) {
       </ol>
     </section>
   );
+}
+
+function formatChatTimestamp(timestamp: number): string {
+  return new Date(timestamp).toLocaleTimeString([], {
+    hour: "numeric",
+    minute: "2-digit"
+  });
 }
 
 function ChatPanel({ room }: { room: ClientRoomState }) {
@@ -1670,7 +1790,14 @@ function ChatPanel({ room }: { room: ClientRoomState }) {
         ) : (
           room.chat.slice(-8).map((chatMessage) => (
             <div key={chatMessage.id} className="chat-message">
-              <strong>{chatMessage.author}</strong>
+              <div className="chat-message-meta">
+                <strong>{chatMessage.author}</strong>
+                {chatMessage.createdAt ? (
+                  <time dateTime={new Date(chatMessage.createdAt).toISOString()}>
+                    {formatChatTimestamp(chatMessage.createdAt)}
+                  </time>
+                ) : null}
+              </div>
               <span>{chatMessage.text}</span>
             </div>
           ))

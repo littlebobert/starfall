@@ -506,6 +506,19 @@ p {
   top: 1rem;
   display: grid;
   gap: 1rem;
+  min-height: 0;
+}
+
+.command-panel-postgame {
+  position: static;
+  align-content: start;
+  grid-template-rows: auto minmax(0, 1fr) auto;
+  max-height: min(58vh, calc(100vh - 8.5rem));
+  overflow: hidden;
+}
+
+.command-panel-postgame .victory-postgame {
+  min-height: 0;
 }
 
 .command-help {
@@ -545,6 +558,32 @@ p {
   background: rgba(14, 116, 144, 0.18);
 }
 
+.victory-postgame {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  min-height: 0;
+}
+
+.victory-summary {
+  display: grid;
+  gap: 0.35rem;
+  flex: 0 0 auto;
+}
+
+.upgrade-shop-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-right: 0.15rem;
+}
+
+.victory-action {
+  flex: 0 0 auto;
+  margin-top: 0.15rem;
+}
+
 .victory h3 {
   margin: 0;
 }
@@ -553,9 +592,31 @@ p {
   margin: 0;
 }
 
+.consumable-stock {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem 0.75rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.75rem;
+  padding: 0.55rem 0.7rem;
+  background: rgba(15, 23, 42, 0.45);
+  color: #cbd5e1;
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+
 .upgrade-shop {
   display: grid;
   gap: 0.75rem;
+}
+
+.consumable-shop {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.consumable-row {
+  grid-template-columns: minmax(0, 1fr) auto;
 }
 
 .upgrade-shop-header {
@@ -637,6 +698,12 @@ p {
 .battle-log li.suffocation {
   border-left-color: rgba(251, 146, 60, 0.55);
   color: #fdba74;
+}
+
+.battle-log li.battle-end {
+  border-left-color: rgba(134, 239, 172, 0.88);
+  color: #bbf7d0;
+  font-weight: 800;
 }
 
 .suffocation-alert {
@@ -728,9 +795,21 @@ button.crew-stepper {
   padding-left: 0.65rem;
 }
 
+.chat-message-meta {
+  display: flex;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+
 .chat-message strong {
   color: #c4b5fd;
   font-size: 0.75rem;
+}
+
+.chat-message time {
+  color: #64748b;
+  font-size: 0.68rem;
+  white-space: nowrap;
 }
 
 .chat-message span {
@@ -767,11 +846,24 @@ button.crew-stepper {
   color: #1f2937;
 }
 
-.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card, .upgrade-row) {
+.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card, .upgrade-row, .record-stat, .consumable-stock) {
   border-color: #d1d5db;
   color: #1f2937;
   background: #ffffff;
   box-shadow: none;
+}
+
+.work-safe .record-stat {
+  background: #f9fafb;
+}
+
+.work-safe .record-stat span {
+  color: #4b5563;
+  font-weight: 700;
+}
+
+.work-safe .record-stat strong {
+  color: #111827;
 }
 
 .work-safe :is(.ship-map, .enemy-map) {
@@ -786,7 +878,7 @@ button.crew-stepper {
   color: #4b5563;
 }
 
-.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span, .battle-log li, .recent-games li, .command-help) {
+.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span, .chat-message time, .battle-log li, .recent-games li, .command-help) {
   color: #374151;
 }
 
@@ -802,6 +894,11 @@ button.crew-stepper {
 .work-safe .battle-log li.suffocation {
   border-left-color: #ea580c;
   color: #c2410c;
+}
+
+.work-safe .battle-log li.battle-end {
+  border-left-color: #15803d;
+  color: #14532d;
 }
 
 .work-safe .suffocation-alert {
@@ -1181,6 +1278,25 @@ button.ship-class-card:hover:not(.selected) {
     grid-row: 2;
     align-content: start;
     gap: 0.65rem;
+    min-height: 0;
+  }
+
+  .game-layout-postgame {
+    grid-template-rows: auto auto minmax(0, 1fr) clamp(9rem, 22vh, 14rem);
+  }
+
+  .command-panel-postgame {
+    grid-row: 2 / 4;
+    align-self: stretch;
+    min-height: 0;
+    max-height: 100%;
+    overflow: hidden;
+  }
+
+  .game-layout-postgame .battle-log {
+    grid-row: 4;
+    align-self: stretch;
+    min-height: 0;
   }
 
   .command-panel h2 {
@@ -1254,7 +1370,8 @@ button.ship-class-card:hover:not(.selected) {
   }
 
   .chat-message strong,
-  .chat-message span {
+  .chat-message span,
+  .chat-message time {
     font-size: 0.68rem;
   }
 
@@ -1272,6 +1389,10 @@ button.ship-class-card:hover:not(.selected) {
 
   .command-panel {
     position: static;
+  }
+
+  .command-panel-postgame {
+    max-height: min(52vh, calc(100vh - 7rem));
   }
 
   .room-header,

@@ -27,7 +27,7 @@ export const SHIP_CLASSES: ShipClassDefinition[] = [
     tagline: "Heavy shields and thick hull. Outlast the fight.",
     maxHull: 32,
     maxShield: 10,
-    startingShield: 5,
+    startingShield: 10,
     systems: {
       shields: 6,
       weapons: 4
@@ -39,7 +39,7 @@ export const SHIP_CLASSES: ShipClassDefinition[] = [
     tagline: "Glass cannon with sharp sensors. Strike first, strike hard.",
     maxHull: 24,
     maxShield: 6,
-    startingShield: 2,
+    startingShield: 6,
     systems: {
       weapons: 6,
       sensors: 5
@@ -51,7 +51,7 @@ export const SHIP_CLASSES: ShipClassDefinition[] = [
     tagline: "Superior targeting and jamming. Control the battlefield.",
     maxHull: 26,
     maxShield: 7,
-    startingShield: 3,
+    startingShield: 7,
     systems: {
       sensors: 6,
       engines: 4
@@ -93,7 +93,7 @@ export function createShip(owner: PlayerId, classId: ShipClassId = DEFAULT_SHIP_
     maxHull: shipClass.maxHull,
     hull: shipClass.maxHull,
     maxShield: shipClass.maxShield,
-    shield: shipClass.startingShield,
+    shield: shipClass.maxShield,
     crewTotal: getCrewTotal(classId),
     crewAssignments: createCrewAssignments(classId),
     systems

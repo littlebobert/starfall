@@ -49,6 +49,8 @@ export interface PlayerState {
   crewDeployed?: boolean;
   credits: number;
   systemUpgrades: Record<SystemId, number>;
+  shieldBraces: number;
+  breachSeals: number;
   deviceId?: string;
 }
 
@@ -157,6 +159,21 @@ export {
   type SessionMatchResult
 } from "./playerStats";
 
+export {
+  canPurchaseConsumable,
+  CONSUMABLES,
+  createDefaultConsumables,
+  formatConsumablePurchase,
+  getConsumableDefinition,
+  getConsumableStock,
+  isConsumableId,
+  MAX_CONSUMABLE_STOCK,
+  STARTING_BREACH_SEALS,
+  STARTING_SHIELD_BRACES,
+  type ConsumableDefinition,
+  type ConsumableId
+} from "./consumables";
+
 import { createShip, DEFAULT_SHIP_CLASS_ID, getShipClass, isShipClassId } from "./ships";
 import {
   applyCrewUpkeep,
@@ -180,6 +197,7 @@ import {
   getUpgradeCost,
   normalizeSystemUpgrades
 } from "./upgrades";
+import { createDefaultConsumables, normalizeConsumables, canPurchaseConsumable, formatConsumablePurchase, getConsumableDefinition, isConsumableId, type ConsumableId } from "./consumables";
 
 export function createDefaultPlayerState(
   id: PlayerId,
@@ -195,6 +213,7 @@ export function createDefaultPlayerState(
     shipClassId,
     credits: 0,
     systemUpgrades: createDefaultSystemUpgrades(),
+    ...createDefaultConsumables(),
     deviceId
   };
 }
@@ -203,7 +222,8 @@ export function ensurePlayerProgress(player: PlayerState): PlayerState {
   return {
     ...player,
     credits: player.credits ?? 0,
-    systemUpgrades: normalizeSystemUpgrades(player.systemUpgrades)
+    systemUpgrades: normalizeSystemUpgrades(player.systemUpgrades),
+    ...normalizeConsumables(player)
   };
 }
 
@@ -212,6 +232,7 @@ export function resetPlayerProgress(player: PlayerState): PlayerState {
     ...player,
     credits: 0,
     systemUpgrades: createDefaultSystemUpgrades(),
+    ...createDefaultConsumables(),
     crewDeployed: undefined
   };
 }
@@ -261,7 +282,24 @@ export const DEFAULT_COMMAND: CombatCommand = {
 
 export const CRITICAL_STRIKE_LOG_MARKER = "CRITICAL STRIKE";
 export const HULL_PUNCTURE_LOG_MARKER = "HULL PUNCTURE";
+export const BATTLE_END_LOG_MARKER = "wins the battle";
 export const SUFFOCATION_TURNS = 3;
+export const BATTLE_LOG_LIMIT = 80;
+
+export function appendToBattleLog(log: string[], ...entries: string[]): string[] {
+  if (entries.length === 0) {
+    return log.slice(-BATTLE_LOG_LIMIT);
+  }
+
+  return [...log, ...entries].slice(-BATTLE_LOG_LIMIT);
+}
+
+function appendBattleEndLog(log: string[], turnEntries: string[], endEntries: string[]): string[] {
+  const protectedCount = turnEntries.length + endEntries.length;
+  const historyLimit = Math.max(BATTLE_LOG_LIMIT - protectedCount, 0);
+
+  return [...log.slice(-historyLimit), ...turnEntries, ...endEntries];
+}
 
 const CRITICAL_STRIKE_BASE_CHANCE = 8;
 const CRITICAL_STRIKE_SENSOR_BONUS = 22;
@@ -329,7 +367,7 @@ export function selectShipClass(room: RoomState, playerId: PlayerId, classId: Sh
         shipClassId: classId
       }
     },
-    log: [...room.log, `${playerLabel(room, playerId)} selects the ${shipClass.name}.`].slice(-30)
+    log: appendToBattleLog(room.log, `${playerLabel(room, playerId)} selects the ${shipClass.name}.`)
   };
 }
 
@@ -403,7 +441,7 @@ export function beginDeploy(room: RoomState): RoomState {
     turn: 1,
     activePlayer: undefined,
     winner: undefined,
-    log: [...room.log, "Both captains are connected. Deploy your crew before combat begins."].slice(-30)
+    log: appendToBattleLog(room.log, "Both captains are connected. Deploy your crew before combat begins.")
   };
 }
 
@@ -440,7 +478,7 @@ export function submitCrewDeployment(
         crewDeployed: true
       }
     },
-    log: [...room.log, `${playerLabel(room, playerId)} confirms crew deployment.`].slice(-30)
+    log: appendToBattleLog(room.log, `${playerLabel(room, playerId)} confirms crew deployment.`)
   };
 }
 
@@ -467,11 +505,11 @@ export function launchCombat(room: RoomState): RoomState {
     turn: 1,
     activePlayer: "captainA",
     winner: undefined,
-    log: [
-      ...room.log,
+    log: appendToBattleLog(
+      room.log,
       `${playerLabel(room, "captainA")} deploys a ${getShipClass(shipClassForPlayer(room, "captainA")).name}. ${playerLabel(room, "captainB")} deploys a ${getShipClass(shipClassForPlayer(room, "captainB")).name}.`,
       `Combat begins. ${playerLabel(room, "captainA")} has the first action.`
-    ].slice(-30)
+    )
   };
 }
 
@@ -524,10 +562,49 @@ export function purchaseSystemUpgrade(
         }
       }
     },
-    log: [
-      ...room.log,
+    log: appendToBattleLog(
+      room.log,
       formatUpgradePurchase(playerLabel(room, playerId), system.name, nextLevel, cost)
-    ].slice(-30)
+    )
+  };
+}
+
+export function purchaseConsumableCharge(
+  room: RoomState,
+  playerId: PlayerId,
+  consumableId: ConsumableId
+): RoomState {
+  const rawPlayer = room.players[playerId];
+
+  if (room.phase !== "finished" || !rawPlayer || !isConsumableId(consumableId)) {
+    return room;
+  }
+
+  const player = ensurePlayerProgress(rawPlayer);
+  const item = getConsumableDefinition(consumableId);
+
+  if (!canPurchaseConsumable(player, consumableId)) {
+    return room;
+  }
+
+  const nextStock =
+    consumableId === "shieldBrace" ? player.shieldBraces + 1 : player.breachSeals + 1;
+
+  return {
+    ...room,
+    players: {
+      ...room.players,
+      [playerId]: {
+        ...player,
+        credits: player.credits - item.cost,
+        shieldBraces: consumableId === "shieldBrace" ? nextStock : player.shieldBraces,
+        breachSeals: consumableId === "breachSeal" ? nextStock : player.breachSeals
+      }
+    },
+    log: appendToBattleLog(
+      room.log,
+      formatConsumablePurchase(playerLabel(room, playerId), item.name, nextStock, item.cost)
+    )
   };
 }
 
@@ -555,7 +632,7 @@ export function rematchCombat(room: RoomState): RoomState {
     turn: 1,
     activePlayer: undefined,
     winner: undefined,
-    log: [...room.log, "Rematch ready. Deploy your crew before the next battle."].slice(-30)
+    log: appendToBattleLog(room.log, "Rematch ready. Deploy your crew before the next battle.")
   };
 }
 
@@ -628,10 +705,24 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
 
   applyCrewUpkeep(playerId, ships[playerId], entries, label);
 
+  const players = { ...room.players };
+  let actingPlayer = players[playerId] ? ensurePlayerProgress(players[playerId]!) : undefined;
+
   if (normalizedCommand.type === "redeploy") {
     applyRedeployCommand(playerId, ships[playerId], normalizedCommand, entries, label);
+  } else if (actingPlayer) {
+    actingPlayer = applyPreparationCommand(
+      playerId,
+      ships[playerId],
+      normalizedCommand,
+      entries,
+      label,
+      actingPlayer
+    );
+    applyElectronicCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, entries, label);
+    applyFireCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, room.turn, entries, label);
+    players[playerId] = actingPlayer;
   } else {
-    applyPreparationCommand(playerId, ships[playerId], normalizedCommand, entries, label);
     applyElectronicCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, entries, label);
     applyFireCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, room.turn, entries, label);
   }
@@ -641,12 +732,17 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
   }
 
   const winner = determineWinner(ships);
-  const nextLog = [...room.log, ...entries].slice(-30);
-  let nextPlayers = room.players;
+  let nextLog: string[];
+  let nextPlayers = players;
 
   if (winner) {
-    nextLog.push(`${label(winner)} wins the battle.`);
-    nextPlayers = applyVictoryCredits(room, ships, winner, room.turn, nextLog);
+    const loser = getOpponent(winner);
+    const endEntries: string[] = [];
+    nextPlayers = applyVictoryCredits(room, ships, winner, room.turn, endEntries, players);
+    endEntries.push(formatBattleVictoryMessage(winner, loser, ships, entries, label));
+    nextLog = appendBattleEndLog(room.log, entries, endEntries);
+  } else {
+    nextLog = appendToBattleLog(room.log, ...entries);
   }
 
   return {
@@ -666,9 +762,10 @@ function applyVictoryCredits(
   ships: Record<PlayerId, Ship>,
   winner: PlayerId,
   turn: number,
-  log: string[]
+  log: string[],
+  currentPlayers: Partial<Record<PlayerId, PlayerState>>
 ): Partial<Record<PlayerId, PlayerState>> {
-  const players = { ...room.players };
+  const players = { ...currentPlayers };
 
   for (const playerId of PLAYER_IDS) {
     const player = players[playerId];
@@ -727,8 +824,9 @@ function applyPreparationCommand(
   ship: Ship,
   command: CombatCommand,
   entries: string[],
-  label: (playerId: PlayerId) => string
-) {
+  label: (playerId: PlayerId) => string,
+  player: PlayerState
+): PlayerState {
   if (command.type === "repair") {
     const systemId = command.repairSystem ?? "reactor";
     const system = ship.systems[systemId];
@@ -742,19 +840,29 @@ function applyPreparationCommand(
     entries.push(
       `${label(playerId)} repairs ${system.name} from ${previousHp}/${system.maxHp} to ${system.hp}/${system.maxHp}.`
     );
-    return;
+    return player;
   }
 
   if (command.type === "brace") {
+    if (player.shieldBraces <= 0) {
+      entries.push(`${label(playerId)} tries to brace shields, but no shield brace charges remain.`);
+      return player;
+    }
+
     const shieldGain = isSystemOnline(ship, "shields") ? 2 : 1;
     ship.shield = clamp(ship.shield + shieldGain, 0, ship.maxShield);
-    entries.push(`${label(playerId)} braces behind reinforced shields.`);
-    return;
+    entries.push(
+      `${label(playerId)} braces behind reinforced shields (${player.shieldBraces - 1} brace charge${player.shieldBraces - 1 === 1 ? "" : "s"} left).`
+    );
+    return {
+      ...player,
+      shieldBraces: player.shieldBraces - 1
+    };
   }
 
   if (command.type === "divert") {
     applyDivert(playerId, ship, command.divertTarget ?? "shields", entries, label);
-    return;
+    return player;
   }
 
   if (command.type === "evasive") {
@@ -764,21 +872,42 @@ function applyPreparationCommand(
     entries.push(
       `${label(playerId)} takes evasive maneuvers, tuning engines from ${previousEngines}/${ship.systems.engines.maxHp} to ${ship.systems.engines.hp}/${ship.systems.engines.maxHp} and adding 1 shield.`
     );
-    return;
+    return player;
   }
 
   if (command.type === "patch") {
+    let nextPlayer = player;
+    const suffocating = ship.oxygenDeadlineTurn !== undefined;
+
+    if (suffocating) {
+      if (player.breachSeals <= 0) {
+        entries.push(`${label(playerId)} tries to seal a hull breach, but no breach seal kits remain.`);
+        return player;
+      }
+
+      nextPlayer = {
+        ...player,
+        breachSeals: player.breachSeals - 1
+      };
+      clearSuffocation(
+        ship,
+        entries,
+        label(playerId),
+        `Hull breach sealed (${nextPlayer.breachSeals} breach seal kit${nextPlayer.breachSeals === 1 ? "" : "s"} left). Cabin pressure stabilizes.`
+      );
+    }
+
     const previousHull = ship.hull;
     const reactorOnline = isSystemOnline(ship, "reactor");
     const patchAmount = reactorOnline ? 3 : 1;
     ship.hull = clamp(ship.hull + patchAmount, 0, ship.maxHull);
-    if (ship.systems.lifeSupport.hp > 0) {
-      clearSuffocation(ship, entries, label(playerId), "Hull breach sealed. Cabin pressure stabilizes.");
-    }
     entries.push(
       `${label(playerId)} patches hull plating from ${previousHull}/${ship.maxHull} to ${ship.hull}/${ship.maxHull}.`
     );
+    return nextPlayer;
   }
+
+  return player;
 }
 
 function applyElectronicCommand(
@@ -884,14 +1013,6 @@ function applyFireCommand(
   let hullDamage = 4 + weaponBonus;
   let systemDamage = 2 + weaponBonus;
 
-  if (defender.shield > 0 && isSystemOnline(defender, "shields")) {
-    const absorbed = Math.min(defender.shield, 3);
-    defender.shield -= absorbed;
-    hullDamage = Math.max(1, hullDamage - absorbed);
-    systemDamage = Math.max(1, systemDamage - 1);
-    entries.push(`${label(getOpponent(playerId))}'s shields absorb ${absorbed} damage.`);
-  }
-
   const critRoll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:crit:${defender.hull}`);
   const critChance = getCriticalStrikeChance(attacker);
   const isCritical = critRoll < critChance;
@@ -903,22 +1024,39 @@ function applyFireCommand(
     systemDamage += CRITICAL_STRIKE_SYSTEM_BONUS;
   }
 
-  defender.hull = clamp(defender.hull - hullDamage, 0, defender.maxHull);
+  let hullDamageApplied = hullDamage;
+
+  if (defender.shield > 0 && isSystemOnline(defender, "shields")) {
+    const previousShield = defender.shield;
+    defender.shield = Math.max(0, defender.shield - hullDamage);
+    const shieldAbsorbed = previousShield - defender.shield;
+    hullDamageApplied = 0;
+
+    if (shieldAbsorbed > 0) {
+      entries.push(
+        `${label(getOpponent(playerId))}'s shields absorb ${shieldAbsorbed} damage (${defender.shield}/${defender.maxShield} remaining).`
+      );
+    }
+  }
+
+  defender.hull = clamp(defender.hull - hullDamageApplied, 0, defender.maxHull);
   const { previousHp: previousSystemHp, lostCrew } = damageShipSystem(defender, targetSystem, systemDamage);
   const casualtyEntry = formatCrewCasualtyEntry(defender.systems[targetSystem].name, lostCrew);
+  const hullSummary =
+    hullDamageApplied > 0 ? `${hullDamageApplied} hull and ${systemDamage} system damage` : `${systemDamage} system damage`;
 
   if (isHullPuncture) {
     beginSuffocation(defender, turn, entries);
     entries.push(
-      `${label(playerId)} lands a ${HULL_PUNCTURE_LOG_MARKER}! ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}). Atmosphere vents into space.`
+      `${label(playerId)} lands a ${HULL_PUNCTURE_LOG_MARKER}! ${hullSummary} (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}). Atmosphere vents into space.`
     );
   } else if (isCritical) {
     entries.push(
-      `${label(playerId)} lands a ${CRITICAL_STRIKE_LOG_MARKER} on ${defender.systems[targetSystem].name}! ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
+      `${label(playerId)} lands a ${CRITICAL_STRIKE_LOG_MARKER} on ${defender.systems[targetSystem].name}! ${hullSummary} (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
     );
   } else {
     entries.push(
-      `${label(playerId)} hits ${defender.systems[targetSystem].name} for ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
+      `${label(playerId)} hits ${defender.systems[targetSystem].name} for ${hullSummary} (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
     );
   }
 
@@ -1001,6 +1139,88 @@ function determineWinner(ships: Record<PlayerId, Ship>): PlayerId | undefined {
 
   if (disabled.length === 1) {
     return getOpponent(disabled[0]);
+  }
+
+  return undefined;
+}
+
+function formatBattleVictoryMessage(
+  winner: PlayerId,
+  loser: PlayerId,
+  ships: Record<PlayerId, Ship>,
+  turnEntries: string[],
+  label: (playerId: PlayerId) => string
+): string {
+  const winnerName = label(winner);
+  const loserName = label(loser);
+  const loserShip = ships[loser];
+  const decisiveEntry = findDecisiveTurnEntry(loser, loserShip, turnEntries, label);
+
+  if (decisiveEntry) {
+    return `${winnerName} ${BATTLE_END_LOG_MARKER} — ${decisiveEntry}`;
+  }
+
+  if (loserShip.systems.reactor.hp <= 0) {
+    return `${winnerName} ${BATTLE_END_LOG_MARKER} — ${loserName}'s reactor is destroyed.`;
+  }
+
+  if (loserShip.hull <= 0) {
+    return `${winnerName} ${BATTLE_END_LOG_MARKER} — ${loserName}'s hull is breached and the ship is lost.`;
+  }
+
+  return `${winnerName} ${BATTLE_END_LOG_MARKER}.`;
+}
+
+function findDecisiveTurnEntry(
+  loser: PlayerId,
+  loserShip: Ship,
+  turnEntries: string[],
+  label: (playerId: PlayerId) => string
+): string | undefined {
+  const loserName = label(loser);
+  const suffocationEntry = turnEntries.find((entry) => entry.includes(`${loserName} crew suffocates`));
+
+  if (suffocationEntry) {
+    return suffocationEntry;
+  }
+
+  if (loserShip.systems.reactor.hp <= 0) {
+    const reactorHit = [...turnEntries]
+      .reverse()
+      .find((entry) => entry.includes("Reactor") && entry.includes("-> 0/"));
+
+    if (reactorHit) {
+      return reactorHit;
+    }
+  }
+
+  if (loserShip.hull <= 0) {
+    const hullHit = [...turnEntries]
+      .reverse()
+      .find(
+        (entry) =>
+          (entry.includes("hits") ||
+            entry.includes(CRITICAL_STRIKE_LOG_MARKER) ||
+            entry.includes(HULL_PUNCTURE_LOG_MARKER)) &&
+          entry.includes(" hull")
+      );
+
+    if (hullHit) {
+      return hullHit;
+    }
+
+    const lastHit = [...turnEntries]
+      .reverse()
+      .find(
+        (entry) =>
+          entry.includes("hits") ||
+          entry.includes(CRITICAL_STRIKE_LOG_MARKER) ||
+          entry.includes(HULL_PUNCTURE_LOG_MARKER)
+      );
+
+    if (lastHit) {
+      return lastHit;
+    }
   }
 
   return undefined;
