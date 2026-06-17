@@ -93,6 +93,43 @@ export function formatCrewDeployment(assignments: CrewAssignments): string {
     .join(", ");
 }
 
+export interface SystemDamageResult {
+  previousHp: number;
+  lostCrew: number;
+}
+
+export function damageShipSystem(ship: Ship, systemId: SystemId, damage: number): SystemDamageResult {
+  const system = ship.systems[systemId];
+  const previousHp = system.hp;
+  system.hp = clamp(system.hp - damage, 0, system.maxHp);
+
+  let lostCrew = 0;
+  if (previousHp > 0 && system.hp === 0) {
+    lostCrew = getCrewAtStation(ship, systemId);
+    if (lostCrew > 0) {
+      ship.crewAssignments = {
+        ...ship.crewAssignments,
+        [systemId]: 0
+      };
+      ship.crewTotal = Math.max(0, ship.crewTotal - lostCrew);
+    }
+  }
+
+  return { previousHp, lostCrew };
+}
+
+export function formatCrewCasualtyEntry(systemName: string, lostCrew: number): string | undefined {
+  if (lostCrew <= 0) {
+    return undefined;
+  }
+
+  if (lostCrew === 1) {
+    return `1 crew member is lost when ${systemName} goes offline.`;
+  }
+
+  return `${lostCrew} crew members are lost when ${systemName} goes offline.`;
+}
+
 export function getCrewAccuracyBonus(ship: Ship): number {
   if (!isSystemOnline(ship, "weapons")) {
     return 0;

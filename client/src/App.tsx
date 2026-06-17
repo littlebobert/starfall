@@ -807,12 +807,14 @@ function ShipPanel({
           <p className="muted">{room.players[playerId]?.name ?? "Unknown captain"}</p>
         </div>
         <div className="ship-heading-stats">
-          <div className="ship-stat">
-            <span>Crew</span>
-            <strong>
-              {getAssignedCrewCount(ship)}/{ship.crewTotal}
-            </strong>
-          </div>
+          {!enemy ? (
+            <div className="ship-stat">
+              <span>Crew</span>
+              <strong>
+                {getAssignedCrewCount(ship)}/{ship.crewTotal}
+              </strong>
+            </div>
+          ) : null}
           <div className="ship-stat">
             <span>Hull</span>
             <strong>
@@ -831,6 +833,7 @@ function ShipPanel({
         onSelectSystem={onSelectSystem}
         interactionHint={spectator ? "Spectator view: systems update as captains trade fire." : interactionHint}
         enemy={enemy}
+        showCrew={!enemy}
       />
 
       <div className="systems-list">
@@ -847,13 +850,15 @@ function ShipMap({
   selectedSystem,
   onSelectSystem,
   interactionHint,
-  enemy
+  enemy,
+  showCrew = true
 }: {
   ship: Ship;
   selectedSystem?: SystemId;
   onSelectSystem?: (systemId: SystemId) => void;
   interactionHint?: string;
   enemy: boolean;
+  showCrew?: boolean;
 }) {
   return (
     <div className={enemy ? "ship-map enemy-map" : "ship-map"}>
@@ -880,7 +885,7 @@ function ShipMap({
             }}
             aria-disabled={!isInteractive}
           >
-            {crewCount > 0 ? (
+            {showCrew && crewCount > 0 ? (
               <span className="crew-pips" aria-label={`${crewCount} crew stationed here`}>
                 {Array.from({ length: crewCount }, (_, index) => (
                   <span key={index} className="crew-pip" />
@@ -1056,6 +1061,13 @@ function CommandControls({
       {commandType === "redeploy" ? (
         <p className="command-help">
           Reassign crew between stations. Uses your turn. Crew still performs upkeep before the redeploy resolves.
+        </p>
+      ) : null}
+
+      {commandType === "repair" ? (
+        <p className="command-help">
+          Restores system health and a little hull. Works on offline systems, but crew stationed there are lost
+          permanently when a room goes to 0.
         </p>
       ) : null}
 
@@ -1255,6 +1267,16 @@ function BattleLog({ entries }: { entries: string[] }) {
 
 function ChatPanel({ room }: { room: ClientRoomState }) {
   const [message, setMessage] = useState("");
+  const messagesRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const container = messagesRef.current;
+    if (!container) {
+      return;
+    }
+
+    container.scrollTop = container.scrollHeight;
+  }, [room.chat]);
 
   function sendMessage(event: FormEvent) {
     event.preventDefault();
@@ -1274,7 +1296,7 @@ function ChatPanel({ room }: { room: ClientRoomState }) {
   return (
     <section className="panel chat-panel">
       <h2>Comms</h2>
-      <div className="chat-messages">
+      <div className="chat-messages" ref={messagesRef}>
         {room.chat.length === 0 ? (
           <p className="muted">No messages yet.</p>
         ) : (

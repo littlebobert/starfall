@@ -678,8 +678,12 @@ button.crew-stepper {
   color: #4b5563;
 }
 
-.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span) {
-  color: #6b7280;
+.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span, .battle-log li, .recent-games li, .command-help) {
+  color: #374151;
+}
+
+.work-safe :is(.ship-room small, .ship-room strong, .chat-message strong) {
+  color: #111827;
 }
 
 .work-safe .battle-log li.critical {

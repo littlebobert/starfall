@@ -111,6 +111,8 @@ export {
   applyCrewUpkeep,
   createCrewAssignments,
   crewAssignmentsEqual,
+  damageShipSystem,
+  formatCrewCasualtyEntry,
   formatCrewDeployment,
   getAssignedCrewCount,
   getCrewAtStation,
@@ -127,6 +129,8 @@ import { createShip, DEFAULT_SHIP_CLASS_ID, getShipClass, isShipClassId } from "
 import {
   applyCrewUpkeep,
   crewAssignmentsEqual,
+  damageShipSystem,
+  formatCrewCasualtyEntry,
   formatCrewDeployment,
   getCrewAccuracyBonus,
   getCrewCritBonus,
@@ -513,16 +517,15 @@ function applyElectronicCommand(
     return;
   }
 
-  const previousSensors = defender.systems.sensors.hp;
   const jamDamage = integrityPercent(attacker, "sensors") >= 0.75 ? 2 : 1;
-  defender.systems.sensors.hp = clamp(
-    defender.systems.sensors.hp - jamDamage,
-    0,
-    defender.systems.sensors.maxHp
-  );
+  const { previousHp, lostCrew } = damageShipSystem(defender, "sensors", jamDamage);
   entries.push(
-    `${label(playerId)} jams enemy sensors (${previousSensors}/${defender.systems.sensors.maxHp} -> ${defender.systems.sensors.hp}/${defender.systems.sensors.maxHp}).`
+    `${label(playerId)} jams enemy sensors (${previousHp}/${defender.systems.sensors.maxHp} -> ${defender.systems.sensors.hp}/${defender.systems.sensors.maxHp}).`
   );
+  const casualtyEntry = formatCrewCasualtyEntry(defender.systems.sensors.name, lostCrew);
+  if (casualtyEntry) {
+    entries.push(`${label(getOpponent(playerId))} ${casualtyEntry}`);
+  }
 }
 
 function applyDivert(
@@ -617,24 +620,23 @@ function applyFireCommand(
     systemDamage += CRITICAL_STRIKE_SYSTEM_BONUS;
   }
 
-  const previousSystemHp = defender.systems[targetSystem].hp;
   defender.hull = clamp(defender.hull - hullDamage, 0, defender.maxHull);
-  defender.systems[targetSystem].hp = clamp(
-    defender.systems[targetSystem].hp - systemDamage,
-    0,
-    defender.systems[targetSystem].maxHp
-  );
+  const { previousHp: previousSystemHp, lostCrew } = damageShipSystem(defender, targetSystem, systemDamage);
+  const casualtyEntry = formatCrewCasualtyEntry(defender.systems[targetSystem].name, lostCrew);
 
   if (isCritical) {
     entries.push(
       `${label(playerId)} lands a ${CRITICAL_STRIKE_LOG_MARKER} on ${defender.systems[targetSystem].name}! ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
     );
-    return;
+  } else {
+    entries.push(
+      `${label(playerId)} hits ${defender.systems[targetSystem].name} for ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
+    );
   }
 
-  entries.push(
-    `${label(playerId)} hits ${defender.systems[targetSystem].name} for ${hullDamage} hull and ${systemDamage} system damage (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
-  );
+  if (casualtyEntry) {
+    entries.push(`${label(getOpponent(playerId))} ${casualtyEntry}`);
+  }
 }
 
 function applyLifeSupportPressure(
