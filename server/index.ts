@@ -46,6 +46,12 @@ import {
   recordGameResult,
   recordMatchResult
 } from "./playerStatsStore";
+import { initDatabase } from "./db";
+import {
+  addRecentGame,
+  getRecentGamesSnapshot,
+  initRecentGamesStore
+} from "./recentGamesStore";
 
 interface ClientAck {
   ok: boolean;
@@ -156,7 +162,6 @@ const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:starfall@example.com";
 
 const rooms = new Map<string, RoomState>();
 const pushSubscriptions = new Map<string, Map<PlayerId, Map<string, webpush.PushSubscription>>>();
-const recentGames: RecentGame[] = [];
 
 webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
@@ -205,9 +210,9 @@ app.use((request, response, next) => {
 });
 
 io.on("connection", (socket) => {
-  socket.emit("recentGames", recentGames);
+  socket.emit("recentGames", getRecentGamesSnapshot());
 
-  socket.on("syncPlayerStats", (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => {
+  socket.on("syncPlayerStats", async (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => {
     const deviceId = normalizeDeviceId(payload.deviceId);
 
     if (!deviceId) {
@@ -216,7 +221,7 @@ io.on("connection", (socket) => {
     }
 
     socket.data.deviceId = deviceId;
-    const stats = getPlayerStats(deviceId, normalizePlayerName(payload.playerName));
+    const stats = await getPlayerStats(deviceId, normalizePlayerName(payload.playerName));
     socket.emit("playerStats", stats);
     ack?.({ ok: true });
   });
@@ -245,7 +250,7 @@ io.on("connection", (socket) => {
     await joinPlayerSocketToRoom(socket, roomCode, "captainA", playerName, deviceId);
     ack?.({ ok: true, roomCode });
     await emitRoom(roomCode);
-    emitPlayerStats(socket, deviceId, playerName);
+    await emitPlayerStats(socket, deviceId, playerName);
   });
 
   socket.on("joinRoom", async (payload: JoinRoomPayload, ack?: (response: ClientAck) => void) => {
@@ -279,7 +284,7 @@ io.on("connection", (socket) => {
       await joinPlayerSocketToRoom(socket, roomCode, playerId, playerName, deviceId);
       ack?.({ ok: true, roomCode });
       await emitRoom(roomCode);
-      emitPlayerStats(socket, deviceId, playerName);
+      await emitPlayerStats(socket, deviceId, playerName);
       return;
     }
 
@@ -564,7 +569,7 @@ io.on("connection", (socket) => {
 
     const resolvedRoom = resolvePlayerTurn(room, playerId, payload.command ?? { type: "brace" });
     rooms.set(room.code, resolvedRoom);
-    recordRecentGame(room, resolvedRoom);
+    await recordRecentGame(room, resolvedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
     await notifyTurnResult(resolvedRoom);
@@ -619,7 +624,7 @@ io.on("connection", (socket) => {
     ack?.({ ok: true });
 
     if (deviceId) {
-      emitPlayerStats(socket, deviceId);
+      await emitPlayerStats(socket, deviceId);
     }
 
     if (roomCode) {
@@ -654,9 +659,19 @@ io.on("connection", (socket) => {
   });
 });
 
-httpServer.listen(port, () => {
-  console.log(`Starfall Commander prototype listening on ${port}`);
+initServer().catch((error) => {
+  console.error("Failed to start Starfall Commander", error);
+  process.exit(1);
 });
+
+async function initServer() {
+  await initDatabase();
+  await initRecentGamesStore();
+
+  httpServer.listen(port, () => {
+    console.log(`Starfall Commander prototype listening on ${port}`);
+  });
+}
 
 async function joinSocketToRoom(
   socket: StarfallSocket,
@@ -706,7 +721,7 @@ async function leaveCurrentRoom(socket: StarfallSocket, options?: { explicitLeav
     const { room: roomAfterMatch, matchResult } = finalizeSessionMatch(room);
 
     if (matchResult) {
-      recordMatchResult(matchResult);
+      await recordMatchResult(matchResult);
       roomAfterMatch.log = appendToBattleLog(
         roomAfterMatch.log,
         `${matchResult.winnerName} wins the room match ${winsA}-${winsB} before departure.`
@@ -829,7 +844,7 @@ function createChatMessage(socket: StarfallSocket, text: string): ChatMessage {
   };
 }
 
-function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
+async function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
   if (previousRoom.phase === "finished" || resolvedRoom.phase !== "finished" || !resolvedRoom.winner) {
     return;
   }
@@ -845,8 +860,7 @@ function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
     completedAt: Date.now()
   };
 
-  recentGames.unshift(game);
-  recentGames.splice(8);
+  const recentGames = await addRecentGame(game);
   io.emit("recentGames", recentGames);
 
   const nextRoom = recordSessionGameWin(resolvedRoom, winner);
@@ -856,7 +870,7 @@ function recordRecentGame(previousRoom: RoomState, resolvedRoom: RoomState) {
   const loserDeviceId = nextRoom.players[loser]?.deviceId;
 
   if (winnerDeviceId && loserDeviceId) {
-    recordGameResult(
+    await recordGameResult(
       winnerDeviceId,
       loserDeviceId,
       nextRoom.players[winner]?.name ?? labelForPlayer(winner),
@@ -876,8 +890,8 @@ function normalizeDeviceId(deviceId?: string): string | undefined {
   return normalized;
 }
 
-function emitPlayerStats(socket: StarfallSocket, deviceId: string, playerName?: string) {
-  socket.emit("playerStats", getPlayerStats(deviceId, playerName));
+async function emitPlayerStats(socket: StarfallSocket, deviceId: string, playerName?: string) {
+  socket.emit("playerStats", await getPlayerStats(deviceId, playerName));
 }
 
 async function notifyPlayerStats(deviceIds: string[]) {
@@ -888,7 +902,7 @@ async function notifyPlayerStats(deviceIds: string[]) {
     const deviceId = socket.data.deviceId;
 
     if (deviceId && uniqueDeviceIds.includes(deviceId)) {
-      socket.emit("playerStats", getPlayerStats(deviceId, socket.data.playerName));
+      socket.emit("playerStats", await getPlayerStats(deviceId, socket.data.playerName));
     }
   }
 }
