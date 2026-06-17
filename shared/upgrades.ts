@@ -55,6 +55,14 @@ export function getUpgradeCost(currentLevel: number): number | undefined {
   return UPGRADE_COST_BY_LEVEL[currentLevel];
 }
 
+export function getUpgradeRefund(currentLevel: number): number | undefined {
+  if (currentLevel <= MIN_UPGRADE_LEVEL) {
+    return undefined;
+  }
+
+  return UPGRADE_COST_BY_LEVEL[currentLevel - 1];
+}
+
 export function getUpgradeHpBonus(level: number): number {
   return Math.max(0, level - MIN_UPGRADE_LEVEL);
 }
@@ -141,4 +149,13 @@ export function formatUpgradePurchase(
   cost: number
 ): string {
   return `${playerName} upgrades ${systemName} to level ${nextLevel} for ${cost} credits.`;
+}
+
+export function formatUpgradeRefund(
+  playerName: string,
+  systemName: string,
+  nextLevel: number,
+  refund: number
+): string {
+  return `${playerName} refunds ${systemName} to level ${nextLevel} for ${refund} credits.`;
 }

@@ -10,7 +10,7 @@ import {
   CRITICAL_STRIKE_LOG_MARKER,
   crewAssignmentsEqual,
   DEFAULT_SHIP_CLASS_ID,
-  DivertTarget,
+  DEFAULT_TARGET_SYSTEM,
   formatShipClassSummary,
   getCriticalStrikeChance,
   getAssignedCrewCount,
@@ -18,6 +18,7 @@ import {
   getShipClass,
   getSuffocationTurnsRemaining,
   getUpgradeCost,
+  getUpgradeRefund,
   getUpgradeHpBonus,
   HULL_PUNCTURE_LOG_MARKER,
   MAX_UPGRADE_LEVEL,
@@ -94,6 +95,10 @@ interface ClientToServerEvents {
     payload: { roomCode: string; consumableId: ConsumableId },
     ack: (response: Ack) => void
   ) => void;
+  refundUpgrade: (
+    payload: { roomCode: string; systemId: SystemId },
+    ack: (response: Ack) => void
+  ) => void;
 }
 
 type NotificationStatus = "unsupported" | "default" | "denied" | "syncing" | "enabled" | "error";
@@ -148,7 +153,6 @@ function playerHasUpgradeProgress(room: ClientRoomState, playerId: PlayerId): bo
 const systemIds = SYSTEM_DEFINITIONS.map((system) => system.id);
 const socket: ClientSocket = io(socketUrl);
 const systemVisuals: Record<SystemId, { gridArea: string; icon: string }> = {
-  reactor: { gridArea: "reactor", icon: "Core" },
   engines: { gridArea: "engines", icon: "Drive" },
   shields: { gridArea: "shields", icon: "Ward" },
   weapons: { gridArea: "weapons", icon: "Guns" },
@@ -175,9 +179,8 @@ export default function App() {
     () => window.localStorage.getItem("starfall-work-safe") === "true"
   );
   const [commandType, setCommandType] = useState<CombatCommand["type"]>("fire");
-  const [targetSystem, setTargetSystem] = useState<SystemId>("reactor");
-  const [repairSystem, setRepairSystem] = useState<SystemId>("reactor");
-  const [divertTarget, setDivertTarget] = useState<DivertTarget>("shields");
+  const [targetSystem, setTargetSystem] = useState<SystemId>(DEFAULT_TARGET_SYSTEM);
+  const [repairSystem, setRepairSystem] = useState<SystemId>(DEFAULT_TARGET_SYSTEM);
   const [crewAssignmentsDraft, setCrewAssignmentsDraft] = useState<Record<SystemId, number>>(() =>
     SYSTEM_DEFINITIONS.reduce(
       (assignments, system) => {
@@ -191,6 +194,7 @@ export default function App() {
   const [notificationError, setNotificationError] = useState<string>();
   const lastSyncedNotificationKey = useRef<string | undefined>(undefined);
   const autoJoinAttemptedKey = useRef<string | undefined>(undefined);
+  const leavingRoomRef = useRef(false);
 
   useEffect(() => {
     function handleConnect() {
@@ -209,6 +213,10 @@ export default function App() {
     }
 
     function handleRoomState(nextRoom: ClientRoomState) {
+      if (leavingRoomRef.current) {
+        return;
+      }
+
       setRoom(nextRoom);
       setJoinCode(nextRoom.code);
       window.history.replaceState(null, "", `?room=${nextRoom.code}`);
@@ -406,6 +414,14 @@ export default function App() {
     socket.emit("purchaseConsumable", { roomCode: room.code, consumableId }, handleAck);
   }
 
+  function refundUpgrade(systemId: SystemId) {
+    if (!room || !room.you) {
+      return;
+    }
+
+    socket.emit("refundUpgrade", { roomCode: room.code, systemId }, handleAck);
+  }
+
   function selectShipClass(shipClassId: ShipClassId) {
     if (!room || !room.you) {
       return;
@@ -436,9 +452,7 @@ export default function App() {
         ? { type: "fire", targetSystem }
         : commandType === "repair"
           ? { type: "repair", repairSystem }
-          : commandType === "divert"
-            ? { type: "divert", divertTarget }
-            : commandType === "jam"
+          : commandType === "jam"
               ? { type: "jam" }
               : commandType === "evasive"
                 ? { type: "evasive" }
@@ -469,8 +483,17 @@ export default function App() {
       }
     }
 
-    socket.emit("leaveRoom", { roomCode: room.code }, handleAck);
+    socket.emit("leaveRoom", { roomCode: room.code }, (response) => {
+      leavingRoomRef.current = false;
+
+      if (!response.ok) {
+        setError(response.error ?? "Could not leave the room.");
+      }
+    });
+    leavingRoomRef.current = true;
     setRoom(undefined);
+    setJoinCode("");
+    autoJoinAttemptedKey.current = undefined;
     window.localStorage.removeItem("starfall-room-code");
     window.history.replaceState(null, "", window.location.pathname);
   }
@@ -561,7 +584,7 @@ export default function App() {
           <p>
             {workSafeMode
               ? "Create or join a room, coordinate actions, and review recent outcomes."
-              : "Create a room, send the code to another captain, and fight by disabling reactors, weapons, shields, engines, sensors, and life support."}
+              : "Create a room, send the code to another captain, and fight by breaching hull, knocking out weapons, shields, engines, sensors, and life support."}
           </p>
         ) : null}
         <button type="button" className="secondary mode-toggle" onClick={toggleWorkSafeMode}>
@@ -719,38 +742,47 @@ export default function App() {
                     onRematch={rematch}
                     onPurchaseUpgrade={purchaseUpgrade}
                     onPurchaseConsumable={purchaseConsumable}
+                    onRefundUpgrade={refundUpgrade}
                   />
                 ) : isSpectator ? (
                   <SpectatorPanel room={room} />
                 ) : (
-                  <>
-                    <p className="muted">
-                      {isYourTurn
-                        ? "Your turn. Choose one action; it resolves immediately."
-                        : "Waiting for the other captain. You will see their action resolve here."}
-                    </p>
-                    <CommandControls
-                      commandType={commandType}
-                      setCommandType={setCommandType}
-                      targetSystem={targetSystem}
-                      setTargetSystem={setTargetSystem}
-                      repairSystem={repairSystem}
-                      setRepairSystem={setRepairSystem}
-                      divertTarget={divertTarget}
-                      setDivertTarget={setDivertTarget}
-                      crewAssignments={crewAssignmentsDraft}
-                      setCrewAssignments={setCrewAssignmentsDraft}
-                      yourShip={yourShip}
-                      yourPlayer={room.you ? room.players[room.you] : undefined}
-                      disabled={!isYourTurn}
-                    />
+                  <div className="command-panel-combat">
+                    <div className="command-panel-scroll">
+                      <p className="muted">
+                        {isYourTurn
+                          ? "Your turn. Choose one action; it resolves immediately."
+                          : "Waiting for the other captain. You will see their action resolve here."}
+                      </p>
+                      <CommandControls
+                        commandType={commandType}
+                        setCommandType={setCommandType}
+                        targetSystem={targetSystem}
+                        setTargetSystem={setTargetSystem}
+                        repairSystem={repairSystem}
+                        setRepairSystem={setRepairSystem}
+                        crewAssignments={crewAssignmentsDraft}
+                        setCrewAssignments={setCrewAssignmentsDraft}
+                        yourShip={yourShip}
+                        yourPlayer={room.you ? room.players[room.you] : undefined}
+                        disabled={!isYourTurn}
+                      />
+                    </div>
                     <button
+                      type="button"
+                      className="command-action"
                       onClick={submitCommand}
                       disabled={!isYourTurn || (commandType === "redeploy" && !redeployReady)}
                     >
-                      {isYourTurn ? "Take action" : "Waiting"}
+                      {!isYourTurn
+                        ? "Waiting"
+                        : commandType === "redeploy"
+                          ? redeployReady
+                            ? "Confirm redeploy"
+                            : "Adjust crew to redeploy"
+                          : "Take action"}
                     </button>
-                  </>
+                  </div>
                 )}
                 <TurnStatus room={room} />
               </aside>
@@ -1208,6 +1240,7 @@ function ShipMap({
             type="button"
             className={`ship-room ${system.hp === 0 ? "offline" : ""} ${isSelected ? "selected" : ""}`}
             style={{ "--integrity": `${integrity}%`, gridArea: visual.gridArea } as CSSProperties}
+            title={system.description}
             onClick={() => {
               if (isInteractive) {
                 onSelectSystem?.(systemId);
@@ -1280,8 +1313,6 @@ function CommandControls({
   setTargetSystem,
   repairSystem,
   setRepairSystem,
-  divertTarget,
-  setDivertTarget,
   crewAssignments,
   setCrewAssignments,
   yourShip,
@@ -1294,8 +1325,6 @@ function CommandControls({
   setTargetSystem: (value: SystemId) => void;
   repairSystem: SystemId;
   setRepairSystem: (value: SystemId) => void;
-  divertTarget: DivertTarget;
-  setDivertTarget: (value: DivertTarget) => void;
   crewAssignments: Record<SystemId, number>;
   setCrewAssignments: (value: Record<SystemId, number>) => void;
   yourShip?: Ship;
@@ -1352,7 +1381,6 @@ function CommandControls({
           <option value="repair">Repair a system</option>
           <option value="redeploy">Redeploy crew</option>
           <option value="brace">Brace shields</option>
-          <option value="divert">Divert reactor power</option>
           <option value="jam">Jam enemy sensors</option>
           <option value="evasive">Evasive maneuvers</option>
           <option value="patch">Emergency hull patch</option>
@@ -1409,24 +1437,9 @@ function CommandControls({
 
       {commandType === "repair" ? (
         <p className="command-help">
-          Restores system health and a little hull. Repairing life support stops suffocation. Works on offline
-          systems, but crew stationed there are lost permanently when a room goes to 0.
+          Restores system health only. Repairing life support stops suffocation. Works on offline systems, but crew
+          stationed there are lost permanently when a room goes to 0.
         </p>
-      ) : null}
-
-      {commandType === "divert" ? (
-        <label>
-          Power target
-          <select
-            value={divertTarget}
-            onChange={(event) => setDivertTarget(event.target.value as DivertTarget)}
-            disabled={disabled}
-          >
-            <option value="shields">Shields</option>
-            <option value="engines">Engines</option>
-            <option value="weapons">Weapons</option>
-          </select>
-        </label>
       ) : null}
 
       {commandType === "jam" ? (
@@ -1450,8 +1463,8 @@ function CommandControls({
 
       {commandType === "patch" ? (
         <p className="command-help">
-          Restores hull directly. If the crew is suffocating, spends 1 breach seal kit to stop atmosphere loss.
-          Buy more in the post-battle shop. Works best while Reactor is online.
+          Restores 3 hull directly. If the crew is suffocating, spends 1 breach seal kit to stop atmosphere loss.
+          Buy more in the post-battle shop.
           {suffocating && breachSeals <= 0 ? " You are out of breach seal kits." : ""}
         </p>
       ) : null}
@@ -1563,14 +1576,50 @@ function VictoryBanner({
   room,
   onRematch,
   onPurchaseUpgrade,
-  onPurchaseConsumable
+  onPurchaseConsumable,
+  onRefundUpgrade
 }: {
   room: ClientRoomState;
   onRematch: () => void;
   onPurchaseUpgrade: (systemId: SystemId) => void;
   onPurchaseConsumable: (consumableId: ConsumableId) => void;
+  onRefundUpgrade: (systemId: SystemId) => void;
 }) {
   const yourPlayer = room.you ? room.players[room.you] : undefined;
+  const opponentId = room.you ? (room.you === "captainA" ? "captainB" : "captainA") : undefined;
+  const opponentPlayer = opponentId ? room.players[opponentId] : undefined;
+  const shopLocked = Boolean(yourPlayer?.rematchReady);
+
+  function renderShop() {
+    if (!yourPlayer) {
+      return null;
+    }
+
+    return (
+      <>
+        <div className="upgrade-shop-scroll">
+          <UpgradeShop
+            player={yourPlayer}
+            shopLocked={shopLocked}
+            onPurchaseUpgrade={onPurchaseUpgrade}
+            onPurchaseConsumable={onPurchaseConsumable}
+            onRefundUpgrade={onRefundUpgrade}
+          />
+        </div>
+        {yourPlayer.rematchReady ? (
+          <p className="muted rematch-status">
+            {opponentPlayer?.rematchReady
+              ? "Both captains ready. Deploying for the next battle..."
+              : "Ready for the next battle. Waiting for the other captain to finish shopping."}
+          </p>
+        ) : (
+          <button type="button" className="victory-action" onClick={onRematch}>
+            Done shopping
+          </button>
+        )}
+      </>
+    );
+  }
 
   if (!room.winner) {
     return (
@@ -1578,22 +1627,7 @@ function VictoryBanner({
         <div className="victory-summary">
           <p className="muted">Both ships are disabled. The sector claims another pair of wrecks.</p>
         </div>
-        {yourPlayer ? (
-          <>
-            <div className="upgrade-shop-scroll">
-              <UpgradeShop
-                player={yourPlayer}
-                onPurchaseUpgrade={onPurchaseUpgrade}
-                onPurchaseConsumable={onPurchaseConsumable}
-              />
-            </div>
-            <button type="button" className="victory-action" onClick={onRematch}>
-              Play again
-            </button>
-          </>
-        ) : (
-          <p className="muted">Waiting for a captain to start a rematch.</p>
-        )}
+        {yourPlayer ? renderShop() : <p className="muted">Waiting for a captain to start a rematch.</p>}
       </div>
     );
   }
@@ -1607,34 +1641,23 @@ function VictoryBanner({
         <h3>{isYou ? "Victory" : "Defeat"}</h3>
         <p>{winnerName} controls the field. Spend salvage credits on system upgrades before the next sortie.</p>
       </div>
-      {yourPlayer ? (
-        <>
-          <div className="upgrade-shop-scroll">
-            <UpgradeShop
-              player={yourPlayer}
-              onPurchaseUpgrade={onPurchaseUpgrade}
-              onPurchaseConsumable={onPurchaseConsumable}
-            />
-          </div>
-          <button type="button" className="victory-action" onClick={onRematch}>
-            Play again
-          </button>
-        </>
-      ) : (
-        <p className="muted">Waiting for a captain to start a rematch.</p>
-      )}
+      {yourPlayer ? renderShop() : <p className="muted">Waiting for a captain to start a rematch.</p>}
     </div>
   );
 }
 
 function UpgradeShop({
   player,
+  shopLocked = false,
   onPurchaseUpgrade,
-  onPurchaseConsumable
+  onPurchaseConsumable,
+  onRefundUpgrade
 }: {
   player: NonNullable<ClientRoomState["players"][PlayerId]>;
+  shopLocked?: boolean;
   onPurchaseUpgrade: (systemId: SystemId) => void;
   onPurchaseConsumable: (consumableId: ConsumableId) => void;
+  onRefundUpgrade: (systemId: SystemId) => void;
 }) {
   return (
     <div className="upgrade-shop">
@@ -1658,7 +1681,7 @@ function UpgradeShop({
                     {item.description} Stock: {stock}/{MAX_CONSUMABLE_STOCK}
                   </p>
                 </div>
-                <button type="button" disabled={!canBuy} onClick={() => onPurchaseConsumable(item.id)}>
+                <button type="button" disabled={!canBuy || shopLocked} onClick={() => onPurchaseConsumable(item.id)}>
                   Buy ({item.cost})
                 </button>
               </div>
@@ -1672,6 +1695,7 @@ function UpgradeShop({
         {SYSTEM_DEFINITIONS.map((system) => {
           const level = player.systemUpgrades[system.id] ?? 1;
           const cost = getUpgradeCost(level);
+          const refund = getUpgradeRefund(level);
           const canAfford = cost !== undefined && player.credits >= cost;
 
           return (
@@ -1691,13 +1715,25 @@ function UpgradeShop({
                   />
                 ))}
               </div>
-              {cost !== undefined ? (
-                <button type="button" disabled={!canAfford} onClick={() => onPurchaseUpgrade(system.id)}>
-                  Upgrade ({cost})
-                </button>
-              ) : (
-                <span className="upgrade-max">Max</span>
-              )}
+              <div className="upgrade-actions">
+                {refund !== undefined ? (
+                  <button
+                    type="button"
+                    className="secondary"
+                    disabled={shopLocked}
+                    onClick={() => onRefundUpgrade(system.id)}
+                  >
+                    Refund ({refund})
+                  </button>
+                ) : null}
+                {cost !== undefined ? (
+                  <button type="button" disabled={!canAfford || shopLocked} onClick={() => onPurchaseUpgrade(system.id)}>
+                    Upgrade ({cost})
+                  </button>
+                ) : (
+                  <span className="upgrade-max">Max</span>
+                )}
+              </div>
             </div>
           );
         })}

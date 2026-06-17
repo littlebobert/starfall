@@ -12,15 +12,13 @@ export const CREW_TOTAL_BY_CLASS: Record<ShipClassId, number> = {
 
 export const DEFAULT_CREW_ASSIGNMENTS: Record<ShipClassId, CrewAssignments> = {
   hauler: {
-    reactor: 1,
-    engines: 0,
+    engines: 1,
     shields: 2,
     weapons: 1,
     sensors: 0,
     lifeSupport: 1
   },
   skiff: {
-    reactor: 0,
     engines: 0,
     shields: 0,
     weapons: 2,
@@ -28,9 +26,8 @@ export const DEFAULT_CREW_ASSIGNMENTS: Record<ShipClassId, CrewAssignments> = {
     lifeSupport: 0
   },
   cutter: {
-    reactor: 1,
     engines: 0,
-    shields: 1,
+    shields: 2,
     weapons: 0,
     sensors: 2,
     lifeSupport: 0
@@ -113,6 +110,11 @@ export function damageShipSystem(ship: Ship, systemId: SystemId, damage: number)
       };
       ship.crewTotal = Math.max(0, ship.crewTotal - lostCrew);
     }
+
+    if (systemId === "shields") {
+      ship.storedShield = ship.shield;
+      ship.shield = 0;
+    }
   }
 
   return { previousHp, lostCrew };
@@ -181,44 +183,9 @@ export function applyCrewUpkeep(
     }
   }
 
-  const reactorCrew = getCrewAtStation(ship, "reactor");
-  if (reactorCrew > 0 && isSystemOnline(ship, "reactor")) {
-    const systemId = findMostDamagedSystem(ship);
-
-    if (systemId) {
-      const system = ship.systems[systemId];
-      const previousHp = system.hp;
-      system.hp = clamp(system.hp + 1, 0, system.maxHp);
-
-      if (system.hp > previousHp) {
-        effects.push(`+1 ${system.name}`);
-      }
-    }
-  }
-
   if (effects.length > 0) {
     entries.push(`${label(playerId)}'s crew maintains ${effects.join(", ")}.`);
   }
-}
-
-function findMostDamagedSystem(ship: Ship): SystemId | undefined {
-  let selected: SystemId | undefined;
-  let lowestRatio = 1;
-
-  for (const systemId of Object.keys(ship.systems) as SystemId[]) {
-    const system = ship.systems[systemId];
-    if (system.hp >= system.maxHp) {
-      continue;
-    }
-
-    const ratio = system.hp / system.maxHp;
-    if (ratio < lowestRatio) {
-      lowestRatio = ratio;
-      selected = systemId;
-    }
-  }
-
-  return selected;
 }
 
 function isSystemOnline(ship: Ship, systemId: SystemId): boolean {

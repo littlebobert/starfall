@@ -23,14 +23,15 @@ import {
   isConsumableId,
   launchCombat,
   bothCrewDeployed,
+  markRematchReady,
   PlayerId,
   PLAYER_IDS,
   PlayerStats,
   purchaseSystemUpgrade,
   purchaseConsumableCharge,
+  refundSystemUpgrade,
   RecentGame,
   recordSessionGameWin,
-  rematchCombat,
   resetPlayerProgress,
   resolvePlayerTurn,
   RoomState,
@@ -123,6 +124,7 @@ interface ClientToServerEvents {
   ) => void;
   leaveRoom: (payload: RoomPayload, ack?: (response: ClientAck) => void) => void;
   purchaseUpgrade: (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => void;
+  refundUpgrade: (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => void;
   purchaseConsumable: (payload: PurchaseConsumablePayload, ack?: (response: ClientAck) => void) => void;
   syncPlayerStats: (payload: SyncPlayerStatsPayload, ack?: (response: ClientAck) => void) => void;
 }
@@ -386,13 +388,14 @@ io.on("connection", (socket) => {
 
   socket.on("rematch", async (payload: RoomPayload, ack?: (response: ClientAck) => void) => {
     const room = getSocketRoom(socket, payload.roomCode);
+    const playerId = socket.data.playerId;
 
     if (!room) {
       ack?.({ ok: false, error: "Join a room before starting a rematch." });
       return;
     }
 
-    if (!socket.data.playerId) {
+    if (!playerId) {
       ack?.({ ok: false, error: "Spectators cannot start a rematch." });
       return;
     }
@@ -407,7 +410,17 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const rematchedRoom = rematchCombat(room);
+    const rematchedRoom = markRematchReady(room, playerId);
+    if (rematchedRoom === room) {
+      if (room.players[playerId]?.rematchReady) {
+        ack?.({ ok: true, roomCode: room.code });
+        return;
+      }
+
+      ack?.({ ok: false, error: "Could not mark ready for rematch." });
+      return;
+    }
+
     rooms.set(room.code, rematchedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
@@ -430,6 +443,11 @@ io.on("connection", (socket) => {
         return;
       }
 
+      if (room.players[playerId]?.rematchReady) {
+        ack?.({ ok: false, error: "You already marked ready for the next battle." });
+        return;
+      }
+
       if (!systemId || !SYSTEM_DEFINITIONS.some((system) => system.id === systemId)) {
         ack?.({ ok: false, error: "Choose a valid system to upgrade." });
         return;
@@ -438,6 +456,45 @@ io.on("connection", (socket) => {
       const updatedRoom = purchaseSystemUpgrade(room, playerId, systemId);
       if (updatedRoom === room) {
         ack?.({ ok: false, error: "Not enough credits or system is already max level." });
+        return;
+      }
+
+      rooms.set(room.code, updatedRoom);
+      ack?.({ ok: true, roomCode: room.code });
+      await emitRoom(room.code);
+    }
+  );
+
+  socket.on(
+    "refundUpgrade",
+    async (payload: PurchaseUpgradePayload, ack?: (response: ClientAck) => void) => {
+      const room = getSocketRoom(socket, payload.roomCode);
+      const playerId = socket.data.playerId;
+      const systemId = payload.systemId;
+
+      if (!room || !playerId) {
+        ack?.({ ok: false, error: "Join a room before refunding upgrades." });
+        return;
+      }
+
+      if (room.phase !== "finished") {
+        ack?.({ ok: false, error: "Upgrades can only be refunded after a battle." });
+        return;
+      }
+
+      if (room.players[playerId]?.rematchReady) {
+        ack?.({ ok: false, error: "You already marked ready for the next battle." });
+        return;
+      }
+
+      if (!systemId || !SYSTEM_DEFINITIONS.some((system) => system.id === systemId)) {
+        ack?.({ ok: false, error: "Choose a valid system to refund." });
+        return;
+      }
+
+      const updatedRoom = refundSystemUpgrade(room, playerId, systemId);
+      if (updatedRoom === room) {
+        ack?.({ ok: false, error: "That system has no upgrade to refund." });
         return;
       }
 
@@ -461,6 +518,11 @@ io.on("connection", (socket) => {
 
       if (room.phase !== "finished") {
         ack?.({ ok: false, error: "Supplies can only be purchased after a battle." });
+        return;
+      }
+
+      if (room.players[playerId]?.rematchReady) {
+        ack?.({ ok: false, error: "You already marked ready for the next battle." });
         return;
       }
 
@@ -553,8 +615,8 @@ io.on("connection", (socket) => {
   socket.on("leaveRoom", async (_payload: RoomPayload, ack?: (response: ClientAck) => void) => {
     const roomCode = socket.data.roomCode;
     const deviceId = socket.data.deviceId;
-    await leaveCurrentRoom(socket);
-    ack?.({ ok: true, roomCode });
+    await leaveCurrentRoom(socket, { explicitLeave: true });
+    ack?.({ ok: true });
 
     if (deviceId) {
       emitPlayerStats(socket, deviceId);
@@ -601,7 +663,7 @@ async function joinSocketToRoom(
   roomCode: string,
   playerName: string
 ) {
-  await leaveCurrentRoom(socket);
+  await leaveCurrentRoom(socket, { explicitLeave: true });
   socket.data.roomCode = roomCode;
   socket.data.playerName = playerName;
   await socket.join(roomCode);
@@ -632,7 +694,7 @@ async function joinSpectatorSocketToRoom(
   socket.data.spectatorId = spectatorId;
 }
 
-async function leaveCurrentRoom(socket: StarfallSocket) {
+async function leaveCurrentRoom(socket: StarfallSocket, options?: { explicitLeave?: boolean }) {
   const roomCode = socket.data.roomCode;
   const playerId = socket.data.playerId;
   const spectatorId = socket.data.spectatorId;
@@ -655,14 +717,17 @@ async function leaveCurrentRoom(socket: StarfallSocket) {
     room = roomAfterMatch;
     rooms.set(room.code, room);
 
-    room.players[playerId] = resetPlayerProgress({
-      ...room.players[playerId]!,
-      connected: false
-    });
-    room.log = appendToBattleLog(
-      room.log,
-      `${room.players[playerId]?.name ?? "A captain"} left the room.`
-    );
+    const playerName = room.players[playerId]?.name ?? "A captain";
+
+    if (options?.explicitLeave) {
+      delete room.players[playerId];
+      room.log = appendToBattleLog(room.log, `${playerName} left the room.`);
+    } else {
+      room.players[playerId] = resetPlayerProgress({
+        ...room.players[playerId]!,
+        connected: false
+      });
+    }
   }
 
   if (room && spectatorId && room.spectators[spectatorId]) {
