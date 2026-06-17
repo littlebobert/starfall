@@ -289,18 +289,13 @@ p {
 
 .ship-panel {
   display: grid;
-  gap: 1rem;
+  gap: 0.65rem;
 }
 
-.ship-stat {
+.ship-vitals {
   display: grid;
-  justify-items: end;
-  color: #cbd5e1;
-}
-
-.ship-stat strong {
-  color: #f8fafc;
-  font-size: 1.05rem;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
 }
 
 .ship-map {
@@ -310,65 +305,29 @@ p {
     "engines shields weapons"
     "sensors lifeSupport weapons";
   grid-template-columns: 1fr 1fr 1.1fr;
-  grid-template-rows: repeat(2, minmax(58px, 1fr));
+  grid-template-rows: repeat(2, minmax(64px, 1fr));
   gap: 0.35rem;
   overflow: visible;
   border: 1px solid rgba(125, 211, 252, 0.2);
-  border-radius: 1.4rem 2.4rem 2.4rem 1.4rem;
-  padding: 1.1rem 2rem 1.1rem 2.6rem;
+  border-radius: 0.9rem;
+  padding: 0.65rem;
   background: rgba(15, 23, 42, 0.96);
 }
 
 .enemy-map {
-  border-radius: 2.4rem 1.4rem 1.4rem 2.4rem;
-  padding: 1.1rem 2.6rem 1.1rem 2rem;
   background: rgba(30, 27, 58, 0.92);
-}
-
-.ship-nose,
-.ship-engine-glow {
-  position: absolute;
-  top: 50%;
-  width: 3.5rem;
-  height: 7rem;
-  transform: translateY(-50%);
-  pointer-events: none;
-}
-
-.ship-nose {
-  right: 0.15rem;
-  border-radius: 999px 0 0 999px;
-  border: 1px solid rgba(148, 163, 184, 0.16);
-  background: rgba(148, 163, 184, 0.08);
-}
-
-.enemy-map .ship-nose {
-  right: auto;
-  left: 0.15rem;
-  border-radius: 0 999px 999px 0;
-}
-
-.ship-engine-glow {
-  left: 0.15rem;
-  border-radius: 999px;
-  background: rgba(251, 146, 60, 0.28);
-  border: 1px solid rgba(251, 146, 60, 0.35);
-}
-
-.enemy-map .ship-engine-glow {
-  right: 0.15rem;
-  left: auto;
 }
 
 .ship-room {
   position: relative;
   display: grid;
-  align-content: center;
-  gap: 0.15rem;
+  align-content: start;
+  gap: 0.12rem;
   min-width: 0;
+  min-height: 0;
   border: 1px solid rgba(203, 213, 225, 0.2);
   border-radius: 0.7rem;
-  padding: 0.55rem;
+  padding: 0.4rem 0.45rem;
   color: #f8fafc;
   background: rgba(15, 23, 42, 0.86);
   box-shadow: inset 0 0 0 1px rgba(15, 23, 42, 0.72);
@@ -393,9 +352,10 @@ p {
   background: rgba(69, 10, 10, 0.58);
 }
 
-.ship-room span {
+.ship-room span,
+.ship-room-icon {
   color: #93c5fd;
-  font-size: 0.65rem;
+  font-size: 0.62rem;
   font-weight: 900;
   letter-spacing: 0.12em;
   text-transform: uppercase;
@@ -403,15 +363,34 @@ p {
 
 .ship-room strong {
   overflow: hidden;
-  font-size: 0.78rem;
+  font-size: 0.72rem;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.ship-room small {
+.ship-room-meter {
+  display: grid;
+  gap: 0.12rem;
+  margin-top: auto;
+  width: 100%;
+}
+
+.ship-room-meter-label {
+  display: flex;
+  justify-content: space-between;
   color: #cbd5e1;
-  font-size: 0.7rem;
+  font-size: 0.62rem;
   font-weight: 800;
+}
+
+.ship-room .meter-track {
+  height: 0.35rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.92);
+}
+
+.ship-room.offline .meter-fill {
+  background: rgba(248, 113, 113, 0.55);
 }
 
 .crew-pips {
@@ -430,6 +409,17 @@ p {
   box-shadow: 0 0 0 1px rgba(15, 23, 42, 0.72);
 }
 
+.ship-stat {
+  display: grid;
+  justify-items: end;
+  color: #cbd5e1;
+}
+
+.ship-stat strong {
+  color: #f8fafc;
+  font-size: 1.05rem;
+}
+
 .map-hint {
   grid-column: 1 / -1;
   margin: 0.2rem 0 0;
@@ -438,8 +428,7 @@ p {
 }
 
 .systems-list {
-  display: grid;
-  gap: 0.8rem;
+  display: none;
 }
 
 .system-row {
@@ -912,10 +901,6 @@ button.crew-stepper {
   background: #ffffff;
 }
 
-.work-safe :is(.ship-engine-glow, .ship-nose) {
-  display: none;
-}
-
 .work-safe :is(.eyebrow, .spectator-list span, .ship-room span, .seat span) {
   color: #4b5563;
 }
@@ -974,6 +959,10 @@ button.crew-stepper {
 
 .work-safe .ship-room {
   background: #ffffff;
+}
+
+.work-safe .ship-room-meter-label {
+  color: #374151;
 }
 
 .work-safe .meter-fill {
@@ -1255,9 +1244,13 @@ button.ship-class-card:hover:not(.selected) {
 
   .ship-panel {
     align-content: start;
-    gap: 0.55rem;
+    gap: 0.45rem;
     min-height: 0;
-    overflow: auto;
+    overflow: visible;
+  }
+
+  .ship-heading .muted {
+    display: none;
   }
 
   .ship-heading h2 {
@@ -1274,47 +1267,33 @@ button.ship-class-card:hover:not(.selected) {
       "engines shields weapons"
       "sensors lifeSupport weapons";
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    grid-template-rows: repeat(2, minmax(52px, 1fr));
+    grid-template-rows: repeat(2, minmax(56px, 1fr));
     gap: 0.25rem;
-    padding: 0.75rem 1.75rem 0.75rem 2.2rem;
-  }
-
-  .enemy-map {
-    padding: 0.75rem 2.2rem 0.75rem 1.75rem;
+    padding: 0.55rem;
   }
 
   .ship-room {
-    padding: 0.42rem;
+    padding: 0.35rem 0.4rem;
   }
 
-  .ship-room span {
-    font-size: 0.56rem;
+  .ship-room-icon {
+    font-size: 0.52rem;
   }
 
   .ship-room strong {
-    font-size: 0.66rem;
+    font-size: 0.62rem;
   }
 
-  .ship-room small,
-  .map-hint,
-  .system-row small {
+  .ship-room-meter-label {
+    font-size: 0.56rem;
+  }
+
+  .ship-room .meter-track {
+    height: 0.32rem;
+  }
+
+  .map-hint {
     display: none;
-  }
-
-  .systems-list {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 0.4rem;
-  }
-
-  .system-row {
-    grid-template-columns: minmax(0, 1fr) 74px;
-    gap: 0.45rem;
-    padding: 0.45rem;
-  }
-
-  .system-row strong,
-  .meter-label {
-    font-size: 0.68rem;
   }
 
   .meter {

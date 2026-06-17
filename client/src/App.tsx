@@ -1186,8 +1186,15 @@ function ShipPanel({
         </div>
       </div>
 
-      <Meter label="Hull" value={ship.hull} max={ship.maxHull} />
-      <Meter label="Shields" value={ship.shield} max={ship.maxShield} />
+      <div className="ship-vitals">
+        <Meter label={`Hull ${ship.hull}/${ship.maxHull}`} value={ship.hull} max={ship.maxHull} compact />
+        <Meter
+          label={`Shields ${ship.shield}/${ship.maxShield}`}
+          value={ship.shield}
+          max={ship.maxShield}
+          compact
+        />
+      </div>
 
       <ShipMap
         ship={ship}
@@ -1197,12 +1204,6 @@ function ShipPanel({
         enemy={enemy}
         showCrew={!enemy}
       />
-
-      <div className="systems-list">
-        {systemIds.map((systemId) => (
-          <SystemRow key={systemId} ship={ship} systemId={systemId} />
-        ))}
-      </div>
     </section>
   );
 }
@@ -1224,8 +1225,6 @@ function ShipMap({
 }) {
   return (
     <div className={enemy ? "ship-map enemy-map" : "ship-map"}>
-      <div className="ship-nose" />
-      <div className="ship-engine-glow" />
       {systemIds.map((systemId) => {
         const system = ship.systems[systemId];
         const visual = systemVisuals[systemId];
@@ -1255,28 +1254,22 @@ function ShipMap({
                 ))}
               </span>
             ) : null}
-            <span>{visual.icon}</span>
+            <span className="ship-room-icon">{visual.icon}</span>
             <strong>{system.name}</strong>
-            <small>
-              {system.hp}/{system.maxHp}
-            </small>
+            <div className="ship-room-meter" aria-hidden={system.maxHp <= 0}>
+              <div className="ship-room-meter-label">
+                <span>
+                  {system.hp}/{system.maxHp}
+                </span>
+              </div>
+              <div className="meter-track">
+                <div className="meter-fill" style={{ width: `${integrity}%` }} />
+              </div>
+            </div>
           </button>
         );
       })}
       <p className="map-hint">{interactionHint}</p>
-    </div>
-  );
-}
-
-function SystemRow({ ship, systemId }: { ship: Ship; systemId: SystemId }) {
-  const system = ship.systems[systemId];
-  return (
-    <div className={`system-row ${system.hp === 0 ? "offline" : ""}`}>
-      <div>
-        <strong>{system.name}</strong>
-        <small>{system.description}</small>
-      </div>
-      <Meter label={`${system.hp}/${system.maxHp}`} value={system.hp} max={system.maxHp} compact />
     </div>
   );
 }
