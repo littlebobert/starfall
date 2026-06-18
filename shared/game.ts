@@ -118,11 +118,16 @@ export interface RoomState {
   ships: Partial<Record<PlayerId, Ship>>;
   turn: number;
   activePlayer?: PlayerId;
+  turnDeadlineAt?: number;
   log: string[];
   chat: ChatMessage[];
   winner?: PlayerId;
   sessionGameWins?: Partial<Record<PlayerId, number>>;
   lastFireDebug?: FireCommandDebug;
+}
+
+export interface ResolveTurnOptions {
+  timedOut?: boolean;
 }
 
 export interface ClientRoomState extends RoomState {
@@ -312,6 +317,11 @@ export const HULL_PUNCTURE_LOG_MARKER = "HULL PUNCTURE";
 export const BATTLE_END_LOG_MARKER = "wins the battle";
 export const SUFFOCATION_TURNS = 3;
 export const BATTLE_LOG_LIMIT = 80;
+export const TURN_TIME_LIMIT_MS = 60_000;
+
+export function createTurnDeadline(now = Date.now()): number {
+  return now + TURN_TIME_LIMIT_MS;
+}
 
 export function appendToBattleLog(log: string[], ...entries: string[]): string[] {
   if (entries.length === 0) {
@@ -484,6 +494,7 @@ export function serializeRoom(room: RoomState, you?: PlayerId, spectatorId?: str
     ships: room.ships,
     turn: room.turn,
     activePlayer: room.activePlayer,
+    turnDeadlineAt: room.turnDeadlineAt,
     log: room.log,
     chat: room.chat,
     winner: room.winner,
@@ -528,6 +539,7 @@ export function beginDeploy(room: RoomState): RoomState {
     players,
     turn: 1,
     activePlayer: undefined,
+    turnDeadlineAt: undefined,
     winner: undefined,
     log: appendToBattleLog(room.log, "Both captains are connected. Deploy your crew before combat begins.")
   };
@@ -594,6 +606,7 @@ export function launchCombat(room: RoomState): RoomState {
     players,
     turn: 1,
     activePlayer: firstPlayer,
+    turnDeadlineAt: createTurnDeadline(),
     winner: undefined,
     log: appendToBattleLog(
       room.log,
@@ -802,6 +815,7 @@ export function rematchCombat(room: RoomState): RoomState {
     players,
     turn: 1,
     activePlayer: undefined,
+    turnDeadlineAt: undefined,
     winner: undefined,
     log: appendToBattleLog(room.log, "Rematch ready. Deploy your crew before the next battle.")
   };
@@ -850,7 +864,12 @@ export function normalizeCommand(command: CombatCommand): CombatCommand {
   return DEFAULT_COMMAND;
 }
 
-export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: CombatCommand): RoomState {
+export function resolvePlayerTurn(
+  room: RoomState,
+  playerId: PlayerId,
+  command: CombatCommand,
+  options?: ResolveTurnOptions
+): RoomState {
   const captainA = room.ships.captainA;
   const captainB = room.ships.captainB;
 
@@ -873,7 +892,9 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
   let actingPlayer = players[playerId] ? ensurePlayerProgress(players[playerId]!) : undefined;
   let fireDebug: FireCommandDebug | undefined;
 
-  if (normalizedCommand.type === "redeploy") {
+  if (options?.timedOut) {
+    entries.push(`${label(playerId)} ran out of time and skips their action.`);
+  } else if (normalizedCommand.type === "redeploy") {
     applyRedeployCommand(playerId, ships[playerId], normalizedCommand, entries, label);
   } else if (actingPlayer) {
     actingPlayer = applyPreparationCommand(
@@ -933,6 +954,7 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
     players: nextPlayers,
     turn: room.turn + 1,
     activePlayer: winner ? undefined : opponent,
+    turnDeadlineAt: winner ? undefined : createTurnDeadline(),
     log: nextLog,
     winner,
     lastFireDebug: fireDebug ?? room.lastFireDebug

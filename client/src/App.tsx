@@ -38,6 +38,7 @@ import {
   STARTING_SHIELD_BRACES,
   SYSTEM_DEFINITIONS,
   SystemId,
+  TURN_TIME_LIMIT_MS,
   type ConsumableId,
   type FireCommandDebug
 } from "../../shared/game";
@@ -776,7 +777,7 @@ export default function App() {
                       <div className="command-panel-scroll">
                         <p className="muted">
                           {isYourTurn
-                            ? "Your turn. Choose one action; it resolves immediately."
+                            ? "Your turn. You have 1 minute before your action is skipped."
                             : "Plan your next action while you wait. It won't submit until your turn."}
                         </p>
                         <CommandControls
@@ -809,6 +810,7 @@ export default function App() {
                       </button>
                     </div>
                   )}
+                  {room.phase === "combat" ? <TurnTimer room={room} /> : null}
                   <TurnStatus room={room} />
                 </aside>
               )}
@@ -1714,6 +1716,55 @@ function SystemSelect({
         ))}
       </select>
     </label>
+  );
+}
+
+function TurnTimer({ room }: { room: ClientRoomState }) {
+  const [now, setNow] = useState(() => Date.now());
+
+  useEffect(() => {
+    if (room.phase !== "combat" || !room.turnDeadlineAt) {
+      return;
+    }
+
+    const interval = window.setInterval(() => setNow(Date.now()), 250);
+    return () => window.clearInterval(interval);
+  }, [room.phase, room.turnDeadlineAt]);
+
+  if (room.phase !== "combat" || !room.turnDeadlineAt || !room.activePlayer) {
+    return null;
+  }
+
+  if (room.players[room.activePlayer]?.isAi) {
+    return null;
+  }
+
+  const remainingMs = Math.max(0, room.turnDeadlineAt - now);
+  const seconds = Math.ceil(remainingMs / 1000);
+  const minutes = Math.floor(seconds / 60);
+  const secondsPart = seconds % 60;
+  const activeName =
+    room.activePlayer && room.players[room.activePlayer]?.name
+      ? room.players[room.activePlayer]!.name
+      : "Captain";
+  const isYourTurn = Boolean(room.you && room.activePlayer === room.you);
+  const urgent = seconds <= 10;
+
+  return (
+    <div
+      className={`turn-timer${urgent ? " turn-timer-urgent" : ""}${isYourTurn ? " turn-timer-yours" : ""}`}
+      aria-live="polite"
+    >
+      <span className="turn-timer-label">{isYourTurn ? "Your turn" : `${activeName}'s turn`}</span>
+      <strong className="turn-timer-clock">
+        {minutes}:{secondsPart.toString().padStart(2, "0")}
+      </strong>
+      {isYourTurn ? (
+        <span className="muted turn-timer-hint">
+          Skips automatically after {Math.round(TURN_TIME_LIMIT_MS / 1000)}s
+        </span>
+      ) : null}
+    </div>
   );
 }
 

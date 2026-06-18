@@ -819,6 +819,47 @@ p {
   padding-top: 0.5rem;
 }
 
+.turn-timer {
+  display: grid;
+  gap: 0.2rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid rgba(125, 211, 252, 0.22);
+  border-radius: 0.85rem;
+  background: rgba(15, 23, 42, 0.55);
+}
+
+.turn-timer-yours {
+  border-color: rgba(125, 211, 252, 0.42);
+}
+
+.turn-timer-urgent {
+  border-color: rgba(251, 146, 60, 0.72);
+  background: rgba(67, 20, 7, 0.42);
+}
+
+.turn-timer-label {
+  color: #cbd5e1;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.turn-timer-clock {
+  color: #f8fafc;
+  font-size: 1.35rem;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.04em;
+}
+
+.turn-timer-urgent .turn-timer-clock {
+  color: #fdba74;
+}
+
+.turn-timer-hint {
+  font-size: 0.68rem;
+}
+
 .crew-assignment-editor {
   display: grid;
   gap: 0.45rem;

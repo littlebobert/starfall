@@ -172,6 +172,7 @@ const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:starfall@example.com";
 const rooms = new Map<string, RoomState>();
 const pushSubscriptions = new Map<string, Map<PlayerId, Map<string, webpush.PushSubscription>>>();
 const aiTurnTimers = new Map<string, NodeJS.Timeout>();
+const turnTimers = new Map<string, NodeJS.Timeout>();
 
 webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
@@ -418,6 +419,7 @@ io.on("connection", (socket) => {
           body: `Combat started in room ${room.code}. Choose the opening action.`
         });
         scheduleAiTurnIfNeeded(nextRoom);
+        scheduleTurnTimerIfNeeded(nextRoom);
       }
     }
   );
@@ -608,6 +610,7 @@ io.on("connection", (socket) => {
     await emitRoom(room.code);
     await notifyTurnResult(resolvedRoom);
     scheduleAiTurnIfNeeded(resolvedRoom);
+    scheduleTurnTimerIfNeeded(resolvedRoom);
   });
 
   socket.on("sendChat", async (payload: SendChatPayload, ack?: (response: ClientAck) => void) => {
@@ -875,6 +878,64 @@ async function resolveAiTurn(roomCode: string) {
   await emitRoom(room.code);
   await notifyTurnResult(nextRoom);
   scheduleAiTurnIfNeeded(nextRoom);
+  scheduleTurnTimerIfNeeded(nextRoom);
+}
+
+function clearTurnTimer(roomCode: string) {
+  const timer = turnTimers.get(roomCode);
+  if (!timer) {
+    return;
+  }
+
+  clearTimeout(timer);
+  turnTimers.delete(roomCode);
+}
+
+function scheduleTurnTimerIfNeeded(room: RoomState) {
+  clearTurnTimer(room.code);
+
+  if (room.phase !== "combat" || !room.activePlayer || !room.turnDeadlineAt) {
+    return;
+  }
+
+  if (isAiPlayer(room, room.activePlayer)) {
+    return;
+  }
+
+  const expectedPlayerId = room.activePlayer;
+  const expectedTurn = room.turn;
+  const delay = Math.max(0, room.turnDeadlineAt - Date.now());
+  const timer = setTimeout(() => {
+    turnTimers.delete(room.code);
+    void resolveTimedOutTurn(room.code, expectedPlayerId, expectedTurn);
+  }, delay);
+  turnTimers.set(room.code, timer);
+}
+
+async function resolveTimedOutTurn(roomCode: string, expectedPlayerId: PlayerId, expectedTurn: number) {
+  const room = rooms.get(roomCode);
+
+  if (!room || room.phase !== "combat") {
+    return;
+  }
+
+  if (room.activePlayer !== expectedPlayerId || room.turn !== expectedTurn) {
+    return;
+  }
+
+  if (isAiPlayer(room, expectedPlayerId)) {
+    return;
+  }
+
+  const resolvedRoom = resolvePlayerTurn(room, expectedPlayerId, { type: "brace" }, { timedOut: true });
+  rooms.set(room.code, resolvedRoom);
+  await recordRecentGame(room, resolvedRoom);
+
+  const nextRoom = rooms.get(room.code) ?? resolvedRoom;
+  await emitRoom(room.code);
+  await notifyTurnResult(nextRoom);
+  scheduleAiTurnIfNeeded(nextRoom);
+  scheduleTurnTimerIfNeeded(nextRoom);
 }
 
 function getSocketRoom(
