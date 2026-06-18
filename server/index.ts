@@ -216,6 +216,12 @@ app.use((request, response, next) => {
     return;
   }
 
+  if (path.extname(request.path)) {
+    response.status(404).type("text/plain").send("Asset not found. Refresh the page to load the latest version.");
+    return;
+  }
+
+  response.setHeader("Cache-Control", "no-store");
   response.type("html").send(renderIndexHtml(request));
 });
 
