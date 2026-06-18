@@ -725,7 +725,23 @@ export default function App() {
                   ) : null}
                 </div>
 
-                <BattleLog entries={room.log} />
+                <div className="combat-log-row">
+                  <BattleLog entries={room.log} />
+                  <div className="combat-reference-stack">
+                    {room.phase === "combat" && !isSpectator ? (
+                      <CombatDebugPanel
+                        room={room}
+                        commandType={commandType}
+                        attackerId={you}
+                        attacker={yourShip}
+                        defender={opponentShip}
+                        targetSystem={targetSystem}
+                        isYourTurn={isYourTurn}
+                      />
+                    ) : null}
+                    <MechanicsCheatSheet />
+                  </div>
+                </div>
                 <ChatPanel room={room} />
               </div>
 
@@ -776,16 +792,6 @@ export default function App() {
                           yourPlayer={room.you ? room.players[room.you] : undefined}
                           disabled={false}
                         />
-                        <CombatDebugPanel
-                          room={room}
-                          commandType={commandType}
-                          attackerId={you}
-                          attacker={yourShip}
-                          defender={opponentShip}
-                          targetSystem={targetSystem}
-                          isYourTurn={isYourTurn}
-                        />
-                        <MechanicsCheatSheet />
                       </div>
                       <button
                         type="button"
@@ -1052,7 +1058,6 @@ function DeployPanel({
     <aside className="panel command-panel deploy-panel">
       <h2>Deploy Crew</h2>
       <p className="muted">Station your crew before combat. Both captains must confirm to begin.</p>
-      <MechanicsCheatSheet />
 
       <div className="ready-grid">
         {PLAYER_IDS.map((playerId) => {
@@ -1562,7 +1567,7 @@ function CombatDebugPanel({
   }
 
   return (
-    <details className="debug-panel" open={commandType === "fire"}>
+    <details className="debug-panel">
       <summary>Fire roll debug</summary>
       {preview ? (
         <FireDebugCard

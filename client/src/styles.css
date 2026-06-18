@@ -138,6 +138,22 @@ p {
   gap: 1rem;
 }
 
+.combat-log-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 1rem;
+  align-items: stretch;
+  min-height: 0;
+}
+
+.combat-reference-stack {
+  display: grid;
+  gap: 0.65rem;
+  align-content: start;
+  min-height: 0;
+  overflow-y: auto;
+}
+
 .landing-grid {
   width: fit-content;
   max-width: 100%;
@@ -1462,6 +1478,10 @@ button.ship-class-card:hover:not(.selected) {
     min-height: 2.35rem;
   }
 
+  .combat-log-row {
+    min-height: 0;
+  }
+
   .battle-log {
     display: grid;
     grid-template-rows: auto minmax(0, 1fr);
@@ -1510,6 +1530,10 @@ button.ship-class-card:hover:not(.selected) {
   .landing-grid,
   .combat-stage,
   .seat-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .combat-log-row {
     grid-template-columns: 1fr;
   }
 
