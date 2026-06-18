@@ -51,6 +51,7 @@ export interface PlayerState {
   breachSeals: number;
   rematchReady?: boolean;
   deviceId?: string;
+  isAi?: boolean;
 }
 
 export interface SpectatorState {
@@ -83,6 +84,32 @@ export interface CombatCommand {
   crewAssignments?: Partial<Record<SystemId, number>>;
 }
 
+export interface FireCommandDebug {
+  turn: number;
+  attacker: PlayerId;
+  defender: PlayerId;
+  targetSystem: SystemId;
+  targetSystemName: string;
+  weaponsOnline: boolean;
+  hitRoll: number;
+  accuracy: number;
+  accuracyBase: number;
+  sensorBonus: number;
+  enginePenalty: number;
+  crewAccuracyBonus: number;
+  crewEvasionPenalty: number;
+  hit: boolean;
+  critRoll: number;
+  critChance: number;
+  critical: boolean;
+  punctureRoll: number;
+  punctureChance: number;
+  hullPuncture: boolean;
+  hullDamage: number;
+  systemDamage: number;
+  shieldAbsorbs: boolean;
+}
+
 export interface RoomState {
   code: string;
   phase: RoomPhase;
@@ -95,6 +122,7 @@ export interface RoomState {
   chat: ChatMessage[];
   winner?: PlayerId;
   sessionGameWins?: Partial<Record<PlayerId, number>>;
+  lastFireDebug?: FireCommandDebug;
 }
 
 export interface ClientRoomState extends RoomState {
@@ -205,7 +233,8 @@ export function createDefaultPlayerState(
   name: string,
   connected: boolean,
   shipClassId: ShipClassId = DEFAULT_SHIP_CLASS_ID,
-  deviceId?: string
+  deviceId?: string,
+  isAi = false
 ): PlayerState {
   return {
     id,
@@ -215,7 +244,8 @@ export function createDefaultPlayerState(
     credits: 0,
     systemUpgrades: createDefaultSystemUpgrades(),
     ...createDefaultConsumables(),
-    deviceId
+    deviceId,
+    isAi
   };
 }
 
@@ -266,7 +296,7 @@ export const SYSTEM_DEFINITIONS: ShipSystemDefinition[] = [
   {
     id: "lifeSupport",
     name: "Life Support",
-    maxHp: 4,
+    maxHp: 10,
     description: "Keeps the crew fighting through prolonged damage."
   }
 ];
@@ -326,6 +356,62 @@ export function getCriticalStrikeChance(ship: Ship): number {
       CRITICAL_STRIKE_MAX_CHANCE
     )
   );
+}
+
+export function calculateFireCommandDebug(
+  attacker: Ship,
+  defender: Ship,
+  targetSystem: SystemId,
+  turn: number,
+  attackerId: PlayerId
+): FireCommandDebug {
+  const defenderId = getOpponent(attackerId);
+  const accuracyBase = 72;
+  const sensorBonus = integrityPercent(attacker, "sensors") * 14;
+  const enginePenalty = integrityPercent(defender, "engines") * 12;
+  const crewAccuracyBonus = getCrewAccuracyBonus(attacker);
+  const crewEvasionPenalty = getCrewEvasionBonus(defender);
+  const accuracy = clamp(
+    accuracyBase + sensorBonus - enginePenalty + crewAccuracyBonus - crewEvasionPenalty,
+    35,
+    92
+  );
+  const hitRoll = deterministicRoll(`${turn}:${attackerId}:${targetSystem}:${defender.hull}`);
+  const weaponsOnline = isSystemOnline(attacker, "weapons");
+  const weaponBonus = integrityPercent(attacker, "weapons") >= 0.8 ? 1 : 0;
+  const critRoll = deterministicRoll(`${turn}:${attackerId}:${targetSystem}:crit:${defender.hull}`);
+  const critChance = getCriticalStrikeChance(attacker);
+  const punctureRoll = deterministicRoll(`${turn}:${attackerId}:${targetSystem}:puncture:${defender.hull}`);
+  const hit = weaponsOnline && hitRoll <= accuracy;
+  const critical = hit && critRoll < critChance;
+  const hullPuncture = critical && punctureRoll < CRITICAL_PUNCTURE_CHANCE;
+  const criticalDamageBonus = critical && !hullPuncture;
+
+  return {
+    turn,
+    attacker: attackerId,
+    defender: defenderId,
+    targetSystem,
+    targetSystemName: defender.systems[targetSystem].name,
+    weaponsOnline,
+    hitRoll,
+    accuracy,
+    accuracyBase,
+    sensorBonus,
+    enginePenalty,
+    crewAccuracyBonus,
+    crewEvasionPenalty,
+    hit,
+    critRoll,
+    critChance,
+    critical,
+    punctureRoll,
+    punctureChance: CRITICAL_PUNCTURE_CHANCE,
+    hullPuncture,
+    hullDamage: 4 + weaponBonus + (criticalDamageBonus ? CRITICAL_STRIKE_HULL_BONUS : 0),
+    systemDamage: 2 + weaponBonus + (criticalDamageBonus ? CRITICAL_STRIKE_SYSTEM_BONUS : 0),
+    shieldAbsorbs: defender.shield > 0 && isSystemOnline(defender, "shields")
+  };
 }
 
 export function createRoom(code: string): RoomState {
@@ -401,9 +487,14 @@ export function serializeRoom(room: RoomState, you?: PlayerId, spectatorId?: str
     log: room.log,
     chat: room.chat,
     winner: room.winner,
+    lastFireDebug: room.lastFireDebug,
     you,
     spectatorId
   };
+}
+
+export function isAiPlayer(room: RoomState, playerId: PlayerId): boolean {
+  return Boolean(room.players[playerId]?.isAi);
 }
 
 export function canStartCombat(room: RoomState): boolean {
@@ -780,6 +871,7 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
 
   const players = { ...room.players };
   let actingPlayer = players[playerId] ? ensurePlayerProgress(players[playerId]!) : undefined;
+  let fireDebug: FireCommandDebug | undefined;
 
   if (normalizedCommand.type === "redeploy") {
     applyRedeployCommand(playerId, ships[playerId], normalizedCommand, entries, label);
@@ -793,11 +885,27 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
       actingPlayer
     );
     applyElectronicCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, entries, label);
-    applyFireCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, room.turn, entries, label);
+    fireDebug = applyFireCommand(
+      playerId,
+      ships[playerId],
+      ships[opponent],
+      normalizedCommand,
+      room.turn,
+      entries,
+      label
+    );
     players[playerId] = actingPlayer;
   } else {
     applyElectronicCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, entries, label);
-    applyFireCommand(playerId, ships[playerId], ships[opponent], normalizedCommand, room.turn, entries, label);
+    fireDebug = applyFireCommand(
+      playerId,
+      ships[playerId],
+      ships[opponent],
+      normalizedCommand,
+      room.turn,
+      entries,
+      label
+    );
   }
 
   for (const id of PLAYER_IDS) {
@@ -826,7 +934,8 @@ export function resolvePlayerTurn(room: RoomState, playerId: PlayerId, command: 
     turn: room.turn + 1,
     activePlayer: winner ? undefined : opponent,
     log: nextLog,
-    winner
+    winner,
+    lastFireDebug: fireDebug ?? room.lastFireDebug
   };
 }
 
@@ -1018,53 +1127,29 @@ function applyFireCommand(
   turn: number,
   entries: string[],
   label: (playerId: PlayerId) => string
-) {
+): FireCommandDebug | undefined {
   if (command.type !== "fire") {
-    return;
-  }
-
-  if (!isSystemOnline(attacker, "weapons")) {
-    entries.push(`${label(playerId)} cannot fire because weapons are offline.`);
-    return;
+    return undefined;
   }
 
   const targetSystem = command.targetSystem ?? DEFAULT_TARGET_SYSTEM;
-  const roll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:${defender.hull}`);
-  const accuracy = clamp(
-    72 +
-      integrityPercent(attacker, "sensors") * 14 -
-      integrityPercent(defender, "engines") * 12 +
-      getCrewAccuracyBonus(attacker) -
-      getCrewEvasionBonus(defender),
-    35,
-    92
-  );
+  const debug = calculateFireCommandDebug(attacker, defender, targetSystem, turn, playerId);
 
-  if (roll > accuracy) {
+  if (!isSystemOnline(attacker, "weapons")) {
+    entries.push(`${label(playerId)} cannot fire because weapons are offline.`);
+    return debug;
+  }
+
+  if (!debug.hit) {
     entries.push(`${label(playerId)} fires at ${defender.systems[targetSystem].name} and misses.`);
-    return;
+    return debug;
   }
 
-  const weaponBonus = integrityPercent(attacker, "weapons") >= 0.8 ? 1 : 0;
-  let hullDamage = 4 + weaponBonus;
-  let systemDamage = 2 + weaponBonus;
-
-  const critRoll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:crit:${defender.hull}`);
-  const critChance = getCriticalStrikeChance(attacker);
-  const isCritical = critRoll < critChance;
-  const punctureRoll = deterministicRoll(`${turn}:${playerId}:${targetSystem}:puncture:${defender.hull}`);
-  const isHullPuncture = isCritical && punctureRoll < CRITICAL_PUNCTURE_CHANCE;
-
-  if (isCritical && !isHullPuncture) {
-    hullDamage += CRITICAL_STRIKE_HULL_BONUS;
-    systemDamage += CRITICAL_STRIKE_SYSTEM_BONUS;
-  }
-
-  let hullDamageApplied = hullDamage;
+  let hullDamageApplied = debug.hullDamage;
 
   if (defender.shield > 0 && isSystemOnline(defender, "shields")) {
     const previousShield = defender.shield;
-    defender.shield = Math.max(0, defender.shield - hullDamage);
+    defender.shield = Math.max(0, defender.shield - debug.hullDamage);
     const shieldAbsorbed = previousShield - defender.shield;
     hullDamageApplied = 0;
 
@@ -1076,17 +1161,19 @@ function applyFireCommand(
   }
 
   defender.hull = clamp(defender.hull - hullDamageApplied, 0, defender.maxHull);
-  const { previousHp: previousSystemHp, lostCrew } = damageShipSystem(defender, targetSystem, systemDamage);
+  const { previousHp: previousSystemHp, lostCrew } = damageShipSystem(defender, targetSystem, debug.systemDamage);
   const casualtyEntry = formatCrewCasualtyEntry(defender.systems[targetSystem].name, lostCrew);
   const hullSummary =
-    hullDamageApplied > 0 ? `${hullDamageApplied} hull and ${systemDamage} system damage` : `${systemDamage} system damage`;
+    hullDamageApplied > 0
+      ? `${hullDamageApplied} hull and ${debug.systemDamage} system damage`
+      : `${debug.systemDamage} system damage`;
 
-  if (isHullPuncture) {
+  if (debug.hullPuncture) {
     beginSuffocation(defender, turn, entries);
     entries.push(
       `${label(playerId)} lands a ${HULL_PUNCTURE_LOG_MARKER}! ${hullSummary} (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}). Atmosphere vents into space.`
     );
-  } else if (isCritical) {
+  } else if (debug.critical) {
     entries.push(
       `${label(playerId)} lands a ${CRITICAL_STRIKE_LOG_MARKER} on ${defender.systems[targetSystem].name}! ${hullSummary} (${previousSystemHp}/${defender.systems[targetSystem].maxHp} -> ${defender.systems[targetSystem].hp}/${defender.systems[targetSystem].maxHp}).`
     );
@@ -1099,6 +1186,8 @@ function applyFireCommand(
   if (casualtyEntry) {
     entries.push(`${label(getOpponent(playerId))} ${casualtyEntry}`);
   }
+
+  return debug;
 }
 
 function beginSuffocation(

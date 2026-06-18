@@ -21,6 +21,7 @@ import {
   isShipClassId,
   isValidDeviceId,
   isConsumableId,
+  isAiPlayer,
   launchCombat,
   bothCrewDeployed,
   markRematchReady,
@@ -42,6 +43,13 @@ import {
   SYSTEM_DEFINITIONS
 } from "../shared/game";
 import {
+  AI_CAPTAIN_NAME,
+  AI_PLAYER_ID,
+  chooseAiCommand,
+  chooseAiCrewDeployment,
+  chooseAiShipClass
+} from "../shared/ai";
+import {
   getPlayerStats,
   recordGameResult,
   recordMatchResult
@@ -62,6 +70,7 @@ interface ClientAck {
 interface CreateRoomPayload {
   playerName?: string;
   deviceId?: string;
+  playAi?: boolean;
 }
 
 interface JoinRoomPayload {
@@ -162,6 +171,7 @@ const vapidSubject = process.env.VAPID_SUBJECT ?? "mailto:starfall@example.com";
 
 const rooms = new Map<string, RoomState>();
 const pushSubscriptions = new Map<string, Map<PlayerId, Map<string, webpush.PushSubscription>>>();
+const aiTurnTimers = new Map<string, NodeJS.Timeout>();
 
 webpush.setVapidDetails(vapidSubject, vapidPublicKey, vapidPrivateKey);
 
@@ -245,6 +255,20 @@ io.on("connection", (socket) => {
 
     room.players.captainA = createDefaultPlayerState("captainA", playerName, true, DEFAULT_SHIP_CLASS_ID, deviceId);
     room.log.push(`${playerName} took command of Captain A.`);
+
+    if (payload.playAi) {
+      const aiShipClass = chooseAiShipClass(roomCode);
+      room.players[AI_PLAYER_ID] = createDefaultPlayerState(
+        AI_PLAYER_ID,
+        AI_CAPTAIN_NAME,
+        true,
+        aiShipClass,
+        undefined,
+        true
+      );
+      room.log.push(`${AI_CAPTAIN_NAME} came online as Captain B.`);
+    }
+
     rooms.set(roomCode, room);
 
     await joinPlayerSocketToRoom(socket, roomCode, "captainA", playerName, deviceId);
@@ -319,7 +343,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const startedRoom = beginDeploy(room);
+    const startedRoom = deployAiCrewIfNeeded(beginDeploy(room));
     rooms.set(room.code, startedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
@@ -387,6 +411,7 @@ io.on("connection", (socket) => {
           title: "Your turn",
           body: `Combat started in room ${room.code}. Choose the opening action.`
         });
+        scheduleAiTurnIfNeeded(nextRoom);
       }
     }
   );
@@ -415,7 +440,7 @@ io.on("connection", (socket) => {
       return;
     }
 
-    const rematchedRoom = markRematchReady(room, playerId);
+    let rematchedRoom = markRematchReady(room, playerId);
     if (rematchedRoom === room) {
       if (room.players[playerId]?.rematchReady) {
         ack?.({ ok: true, roomCode: room.code });
@@ -426,9 +451,12 @@ io.on("connection", (socket) => {
       return;
     }
 
+    rematchedRoom = deployAiCrewIfNeeded(markAiRematchReadyIfNeeded(rematchedRoom));
+
     rooms.set(room.code, rematchedRoom);
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
+    scheduleAiTurnIfNeeded(rematchedRoom);
   });
 
   socket.on(
@@ -573,6 +601,7 @@ io.on("connection", (socket) => {
     ack?.({ ok: true, roomCode: room.code });
     await emitRoom(room.code);
     await notifyTurnResult(resolvedRoom);
+    scheduleAiTurnIfNeeded(resolvedRoom);
   });
 
   socket.on("sendChat", async (payload: SendChatPayload, ack?: (response: ClientAck) => void) => {
@@ -771,6 +800,75 @@ async function emitRoom(roomCode: string) {
   for (const socket of sockets) {
     socket.emit("roomState", serializeRoom(room, socket.data.playerId, socket.data.spectatorId));
   }
+}
+
+function deployAiCrewIfNeeded(room: RoomState): RoomState {
+  if (room.phase !== "deploy") {
+    return room;
+  }
+
+  let nextRoom = room;
+  for (const playerId of PLAYER_IDS) {
+    const ship = nextRoom.ships[playerId];
+    if (!isAiPlayer(nextRoom, playerId) || !ship || nextRoom.players[playerId]?.crewDeployed) {
+      continue;
+    }
+
+    nextRoom = submitCrewDeployment(nextRoom, playerId, chooseAiCrewDeployment(ship));
+  }
+
+  return nextRoom;
+}
+
+function markAiRematchReadyIfNeeded(room: RoomState): RoomState {
+  if (room.phase !== "finished") {
+    return room;
+  }
+
+  let nextRoom = room;
+  for (const playerId of PLAYER_IDS) {
+    if (!isAiPlayer(nextRoom, playerId) || nextRoom.players[playerId]?.rematchReady) {
+      continue;
+    }
+
+    nextRoom = markRematchReady(nextRoom, playerId);
+  }
+
+  return nextRoom;
+}
+
+function scheduleAiTurnIfNeeded(room: RoomState) {
+  if (room.phase !== "combat" || !room.activePlayer || !isAiPlayer(room, room.activePlayer)) {
+    return;
+  }
+
+  if (aiTurnTimers.has(room.code)) {
+    return;
+  }
+
+  const timer = setTimeout(() => {
+    aiTurnTimers.delete(room.code);
+    void resolveAiTurn(room.code);
+  }, 650);
+  aiTurnTimers.set(room.code, timer);
+}
+
+async function resolveAiTurn(roomCode: string) {
+  const room = rooms.get(roomCode);
+  const aiPlayerId = room?.activePlayer;
+
+  if (!room || room.phase !== "combat" || !aiPlayerId || !isAiPlayer(room, aiPlayerId)) {
+    return;
+  }
+
+  const resolvedRoom = resolvePlayerTurn(room, aiPlayerId, chooseAiCommand(room, aiPlayerId));
+  rooms.set(room.code, resolvedRoom);
+  await recordRecentGame(room, resolvedRoom);
+
+  const nextRoom = rooms.get(room.code) ?? resolvedRoom;
+  await emitRoom(room.code);
+  await notifyTurnResult(nextRoom);
+  scheduleAiTurnIfNeeded(nextRoom);
 }
 
 function getSocketRoom(

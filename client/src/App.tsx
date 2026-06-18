@@ -5,6 +5,7 @@ import {
   ClientRoomState,
   CombatCommand,
   CONSUMABLES,
+  calculateFireCommandDebug,
   canPurchaseConsumable,
   BATTLE_END_LOG_MARKER,
   CRITICAL_STRIKE_LOG_MARKER,
@@ -37,7 +38,8 @@ import {
   STARTING_SHIELD_BRACES,
   SYSTEM_DEFINITIONS,
   SystemId,
-  type ConsumableId
+  type ConsumableId,
+  type FireCommandDebug
 } from "../../shared/game";
 
 interface Ack {
@@ -56,7 +58,7 @@ interface ServerToClientEvents {
 
 interface ClientToServerEvents {
   createRoom: (
-    payload: { playerName: string; deviceId: string },
+    payload: { playerName: string; deviceId: string; playAi?: boolean },
     ack: (response: Ack) => void
   ) => void;
   joinRoom: (
@@ -154,10 +156,18 @@ const systemIds = SYSTEM_DEFINITIONS.map((system) => system.id);
 const socket: ClientSocket = io(socketUrl);
 const systemVisuals: Record<SystemId, { gridArea: string; icon: string }> = {
   engines: { gridArea: "engines", icon: "Drive" },
-  shields: { gridArea: "shields", icon: "Ward" },
+  shields: { gridArea: "shields", icon: "Shield Gen" },
   weapons: { gridArea: "weapons", icon: "Guns" },
   sensors: { gridArea: "sensors", icon: "Scan" },
   lifeSupport: { gridArea: "lifeSupport", icon: "O2" }
+};
+
+const crewEffectText: Record<SystemId, string> = {
+  engines: "+2 evasion per crew while Engines are online.",
+  shields: "Restores +1 shield per crew at upkeep, max +2 per turn.",
+  weapons: "+3 fire accuracy per crew while Weapons are online.",
+  sensors: "+3 crit chance per crew while Sensors are online.",
+  lifeSupport: "No crew bonus; keep this system repaired to stop suffocation."
 };
 
 export default function App() {
@@ -301,6 +311,7 @@ export default function App() {
   const isSpectator = Boolean(room?.spectatorId && !you);
   const isYourTurn = Boolean(room?.phase === "combat" && you && room.activePlayer === you);
   const yourShip = you ? room?.ships[you] : undefined;
+  const opponentShip = opponent ? room?.ships[opponent] : undefined;
   const redeployReady = Boolean(
     yourShip &&
       sanitizeCrewAssignments(yourShip, crewAssignmentsDraft) &&
@@ -346,6 +357,14 @@ export default function App() {
     socket.emit(
       "createRoom",
       { playerName: rememberName(), deviceId: getOrCreateDeviceId() },
+      handleAck
+    );
+  }
+
+  function createAiRoom() {
+    socket.emit(
+      "createRoom",
+      { playerName: rememberName(), deviceId: getOrCreateDeviceId(), playAi: true },
       handleAck
     );
   }
@@ -587,7 +606,12 @@ export default function App() {
                   placeholder="Captain Vale"
                 />
               </label>
-              <button type="submit">Create room</button>
+              <div className="create-actions">
+                <button type="submit">Create room</button>
+                <button type="button" className="secondary" onClick={createAiRoom}>
+                  Battle AI
+                </button>
+              </div>
             </form>
 
             <form onSubmit={joinRoom} className="stack">
@@ -617,7 +641,15 @@ export default function App() {
           </div>
         </section>
       ) : (
-        <div className={room.phase === "finished" ? "game-layout game-layout-postgame" : "game-layout"}>
+        <div
+          className={
+            room.phase === "finished"
+              ? "game-layout game-layout-postgame"
+              : room.phase === "lobby"
+                ? "game-layout game-layout-lobby"
+                : "game-layout"
+          }
+        >
           <RoomHeader
             room={room}
             onLeave={leaveRoom}
@@ -744,6 +776,16 @@ export default function App() {
                           yourPlayer={room.you ? room.players[room.you] : undefined}
                           disabled={false}
                         />
+                        <CombatDebugPanel
+                          room={room}
+                          commandType={commandType}
+                          attackerId={you}
+                          attacker={yourShip}
+                          defender={opponentShip}
+                          targetSystem={targetSystem}
+                          isYourTurn={isYourTurn}
+                        />
+                        <MechanicsCheatSheet />
                       </div>
                       <button
                         type="button"
@@ -1010,18 +1052,21 @@ function DeployPanel({
     <aside className="panel command-panel deploy-panel">
       <h2>Deploy Crew</h2>
       <p className="muted">Station your crew before combat. Both captains must confirm to begin.</p>
+      <MechanicsCheatSheet />
 
       <div className="ready-grid">
         {PLAYER_IDS.map((playerId) => {
           const playerName =
             room.players[playerId]?.name ?? (playerId === "captainA" ? "Captain A" : "Captain B");
+          const isAi = Boolean(room.players[playerId]?.isAi);
 
           return (
             <div
               key={playerId}
               className={room.players[playerId]?.crewDeployed ? "ready-pill ready" : "ready-pill"}
             >
-              {playerName}: {room.players[playerId]?.crewDeployed ? "Confirmed" : "Deploying"}
+              {playerName}
+              {isAi ? " (AI)" : ""}: {room.players[playerId]?.crewDeployed ? "Confirmed" : "Deploying"}
             </div>
           );
         })}
@@ -1097,12 +1142,16 @@ function SpectatorPanel({ room }: { room: ClientRoomState }) {
 function PlayerSeat({ room, playerId }: { room: ClientRoomState; playerId: PlayerId }) {
   const player = room.players[playerId];
   const shipClass = getShipClass(player?.shipClassId ?? DEFAULT_SHIP_CLASS_ID);
+  const isAi = Boolean(player?.isAi);
 
   return (
     <div className="seat">
       <span>{playerId === "captainA" ? "Captain A" : "Captain B"}</span>
-      <strong>{player?.name ?? "Open seat"}</strong>
-      <p className="muted">{player ? shipClass.name : "Waiting for captain"}</p>
+      <strong className="seat-name">
+        {player?.name ?? "Open seat"}
+        {isAi ? <small className="ai-pill">AI</small> : null}
+      </strong>
+      <p className="muted">{player ? `${shipClass.name}${isAi ? " · AI opponent" : ""}` : "Waiting for captain"}</p>
       <small className={player?.connected ? "online-text" : "muted"}>
         {player?.connected ? "Connected" : player ? "Disconnected" : "Waiting"}
       </small>
@@ -1144,7 +1193,10 @@ function ShipPanel({
           <p className="eyebrow">{title}</p>
           <h2>{ship.name}</h2>
           <p className="muted">{getShipClass(ship.classId).tagline}</p>
-          <p className="muted">{room.players[playerId]?.name ?? "Unknown captain"}</p>
+          <p className="muted">
+            {room.players[playerId]?.name ?? "Unknown captain"}
+            {room.players[playerId]?.isAi ? " · AI opponent" : ""}
+          </p>
           {suffocationTurns ? (
             <p className="suffocation-alert">
               Crew suffocating — {suffocationTurns} turn{suffocationTurns === 1 ? "" : "s"} until loss
@@ -1448,6 +1500,137 @@ function CommandControls({
   );
 }
 
+function MechanicsCheatSheet() {
+  return (
+    <details className="mechanics-cheat-sheet">
+      <summary>Mechanics cheat sheet</summary>
+      <div className="cheat-sheet-grid">
+        <div>
+          <strong>Crew</strong>
+          <p>
+            Crew bonuses only work while that system is online. If a system goes to 0, crew stationed there are lost.
+          </p>
+        </div>
+        <div>
+          <strong>Shots</strong>
+          <p>
+            Sensors and weapon crew improve hits and crits. Enemy engines and engine crew make shots harder to land.
+          </p>
+        </div>
+        <div>
+          <strong>Shields</strong>
+          <p>
+            Online shields absorb hull damage first. Destroying Shield Gen drops shields to 0 until repaired.
+          </p>
+        </div>
+        <div>
+          <strong>Suffocation</strong>
+          <p>
+            Life Support at 0 or a hull puncture starts a {SUFFOCATION_TURNS}-turn timer. Repair Life Support or use a
+            breach seal kit to stop it.
+          </p>
+        </div>
+      </div>
+    </details>
+  );
+}
+
+function CombatDebugPanel({
+  room,
+  commandType,
+  attackerId,
+  attacker,
+  defender,
+  targetSystem,
+  isYourTurn
+}: {
+  room: ClientRoomState;
+  commandType: CombatCommand["type"];
+  attackerId?: PlayerId;
+  attacker?: Ship;
+  defender?: Ship;
+  targetSystem: SystemId;
+  isYourTurn: boolean;
+}) {
+  const preview =
+    commandType === "fire" && attackerId && attacker && defender
+      ? calculateFireCommandDebug(attacker, defender, targetSystem, room.turn, attackerId)
+      : undefined;
+
+  if (!preview && !room.lastFireDebug) {
+    return null;
+  }
+
+  return (
+    <details className="debug-panel" open={commandType === "fire"}>
+      <summary>Fire roll debug</summary>
+      {preview ? (
+        <FireDebugCard
+          title="Selected shot"
+          debug={preview}
+          room={room}
+          note={!isYourTurn ? "Waiting preview: the roll can change before your turn." : undefined}
+        />
+      ) : null}
+      {room.lastFireDebug ? (
+        <FireDebugCard title="Last fired shot" debug={room.lastFireDebug} room={room} />
+      ) : null}
+    </details>
+  );
+}
+
+function FireDebugCard({
+  title,
+  debug,
+  room,
+  note
+}: {
+  title: string;
+  debug: FireCommandDebug;
+  room: ClientRoomState;
+  note?: string;
+}) {
+  const attackerName = room.players[debug.attacker]?.name ?? (debug.attacker === "captainA" ? "Captain A" : "Captain B");
+  const defenderName = room.players[debug.defender]?.name ?? (debug.defender === "captainA" ? "Captain A" : "Captain B");
+
+  return (
+    <div className="debug-card">
+      <strong>
+        {title}: Turn {debug.turn}, {attackerName} to {defenderName}'s {debug.targetSystemName}
+      </strong>
+      {note ? <p>{note}</p> : null}
+      <p>
+        Hit: roll {debug.hitRoll} vs {formatDebugNumber(debug.accuracy)} accuracy (
+        {formatDebugNumber(debug.accuracyBase)} base + {formatDebugNumber(debug.sensorBonus)} sensors +{" "}
+        {debug.crewAccuracyBonus} weapon crew - {formatDebugNumber(debug.enginePenalty)} enemy engines -{" "}
+        {debug.crewEvasionPenalty} enemy engine crew) = {debug.hit ? "hit" : "miss"}.
+      </p>
+      <p>
+        Crit: roll {debug.critRoll} vs {debug.critChance}% chance = {debug.critical ? "critical" : "normal"}.
+        {debug.critical
+          ? ` Puncture roll ${debug.punctureRoll} vs ${debug.punctureChance}% = ${
+              debug.hullPuncture ? "hull puncture" : "no puncture"
+            }.`
+          : ""}
+      </p>
+      <p>
+        Result:{" "}
+        {!debug.weaponsOnline
+          ? "Weapons are offline, so the shot cannot fire."
+          : !debug.hit
+            ? "The shot misses and deals no damage."
+            : `${debug.hullDamage} ${
+                debug.shieldAbsorbs ? "potential hull damage blocked by active shields" : "hull damage to hull"
+              }, plus ${debug.systemDamage} system damage.`}
+      </p>
+    </div>
+  );
+}
+
+function formatDebugNumber(value: number): string {
+  return Number.isInteger(value) ? String(value) : value.toFixed(1);
+}
+
 function CrewAssignmentEditor({
   ship,
   assignments,
@@ -1474,7 +1657,10 @@ function CrewAssignmentEditor({
 
         return (
           <div key={system.id} className="crew-assignment-row">
-            <span>{system.name}</span>
+            <div className="crew-assignment-copy">
+              <span>{system.name}</span>
+              <small>{crewEffectText[system.id]}</small>
+            </div>
             <div className="crew-assignment-controls">
               <button
                 type="button"
@@ -1532,10 +1718,12 @@ function TurnStatus({ room }: { room: ClientRoomState }) {
       {PLAYER_IDS.map((playerId) => {
         const playerName =
           room.players[playerId]?.name ?? (playerId === "captainA" ? "Captain A" : "Captain B");
+        const isAi = Boolean(room.players[playerId]?.isAi);
 
         return (
           <div key={playerId} className={room.activePlayer === playerId ? "ready-pill ready" : "ready-pill"}>
-            {playerName}:{" "}
+            {playerName}
+            {isAi ? " (AI)" : ""}:{" "}
             {room.phase === "finished"
               ? "Done"
               : room.activePlayer === playerId

@@ -166,6 +166,12 @@ p {
   padding: 0.55rem 0.65rem;
 }
 
+.create-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.55rem;
+}
+
 .player-record {
   display: grid;
   gap: 0.75rem;
@@ -752,6 +758,51 @@ p {
   font-weight: 800;
 }
 
+.mechanics-cheat-sheet,
+.debug-panel {
+  display: grid;
+  gap: 0.55rem;
+  border: 1px solid rgba(148, 163, 184, 0.16);
+  border-radius: 0.85rem;
+  padding: 0.65rem;
+  background: rgba(15, 23, 42, 0.42);
+}
+
+.mechanics-cheat-sheet summary,
+.debug-panel summary {
+  cursor: pointer;
+  color: #e2e8f0;
+  font-size: 0.78rem;
+  font-weight: 900;
+}
+
+.cheat-sheet-grid,
+.debug-card {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.cheat-sheet-grid strong,
+.debug-card strong,
+.crew-assignment-copy span {
+  color: #f8fafc;
+  font-size: 0.78rem;
+}
+
+.cheat-sheet-grid p,
+.debug-card p,
+.crew-assignment-copy small {
+  margin: 0;
+  color: #94a3b8;
+  font-size: 0.7rem;
+  line-height: 1.35;
+}
+
+.debug-card {
+  border-top: 1px solid rgba(148, 163, 184, 0.14);
+  padding-top: 0.5rem;
+}
+
 .crew-assignment-editor {
   display: grid;
   gap: 0.45rem;
@@ -780,9 +831,13 @@ p {
   align-items: center;
 }
 
-.crew-assignment-row > span {
-  color: #cbd5e1;
-  font-size: 0.78rem;
+.crew-assignment-copy {
+  display: grid;
+  gap: 0.15rem;
+  min-width: 0;
+}
+
+.crew-assignment-copy span {
   font-weight: 800;
 }
 
@@ -882,7 +937,7 @@ button.crew-stepper {
   color: #1f2937;
 }
 
-.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card, .upgrade-row, .record-stat, .consumable-stock, .crew-assignment-editor, .deploy-panel) {
+.work-safe :is(.panel, .seat, .system-row, .ship-map, .ship-room, .ready-pill, .spectator-list, .ship-class-card, .upgrade-row, .record-stat, .consumable-stock, .crew-assignment-editor, .deploy-panel, .mechanics-cheat-sheet, .debug-panel) {
   border-color: #d1d5db;
   color: #1f2937;
   background: #ffffff;
@@ -891,7 +946,11 @@ button.crew-stepper {
 
 .work-safe .crew-assignment-header strong,
 .work-safe .crew-assignment-row > span,
-.work-safe .crew-assignment-controls strong {
+.work-safe .crew-assignment-controls strong,
+.work-safe .crew-assignment-copy span,
+.work-safe .cheat-sheet-grid strong,
+.work-safe .debug-card strong,
+.work-safe :is(.mechanics-cheat-sheet, .debug-panel) summary {
   color: #111827;
 }
 
@@ -921,7 +980,12 @@ button.crew-stepper {
   color: #4b5563;
 }
 
-.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span, .chat-message time, .battle-log li, .recent-games li, .command-help) {
+.work-safe .ai-pill {
+  color: #4c1d95;
+  background: #ede9fe;
+}
+
+.work-safe :is(.muted, .system-row small, .map-hint, .meter-label, .ship-stat, .chat-message span, .chat-message time, .battle-log li, .recent-games li, .command-help, .crew-assignment-copy small, .cheat-sheet-grid p, .debug-card p) {
   color: #374151;
 }
 
@@ -1000,6 +1064,12 @@ button.crew-stepper {
 .lobby {
   display: grid;
   gap: 1rem;
+}
+
+.lobby > button {
+  min-height: 2.65rem;
+  padding-block: 0.7rem;
+  line-height: 1.25;
 }
 
 .ship-class-picker {
@@ -1088,6 +1158,23 @@ button.ship-class-card:hover:not(.selected) {
   font-size: 0.75rem;
   font-weight: 900;
   letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.seat-name {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+}
+
+.ai-pill {
+  border-radius: 999px;
+  padding: 0.12rem 0.35rem;
+  color: #c4b5fd;
+  background: rgba(124, 58, 237, 0.18);
+  font-size: 0.62rem;
+  font-weight: 900;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
 }
 
@@ -1209,6 +1296,12 @@ button.ship-class-card:hover:not(.selected) {
     grid-template-rows: auto minmax(0, 1fr);
     gap: 0.6rem;
     min-height: 0;
+  }
+
+  .game-layout-lobby {
+    grid-template-rows: auto auto auto auto;
+    align-content: start;
+    overflow-y: auto;
   }
 
   .combat-stage {
