@@ -22,6 +22,7 @@ import {
   getUpgradeRefund,
   getUpgradeHpBonus,
   HULL_PUNCTURE_LOG_MARKER,
+  isAiGame,
   MAX_UPGRADE_LEVEL,
   MAX_CONSUMABLE_STOCK,
   MAX_CREW_PER_STATION,
@@ -311,6 +312,7 @@ export default function App() {
   const opponent = you ? (you === "captainA" ? "captainB" : "captainA") : undefined;
   const isSpectator = Boolean(room?.spectatorId && !you);
   const isYourTurn = Boolean(room?.phase === "combat" && you && room.activePlayer === you);
+  const aiGame = Boolean(room && isAiGame(room));
   const yourShip = you ? room?.ships[you] : undefined;
   const opponentShip = opponent ? room?.ships[opponent] : undefined;
   const redeployReady = Boolean(
@@ -777,7 +779,9 @@ export default function App() {
                       <div className="command-panel-scroll">
                         <p className="muted">
                           {isYourTurn
-                            ? "Your turn. You have 1 minute before your action is skipped."
+                            ? aiGame
+                              ? "Your turn. Choose one action; it resolves immediately."
+                              : "Your turn. You have 1 minute before your action is skipped."
                             : "Plan your next action while you wait. It won't submit until your turn."}
                         </p>
                         <CommandControls
@@ -810,7 +814,7 @@ export default function App() {
                       </button>
                     </div>
                   )}
-                  {room.phase === "combat" ? <TurnTimer room={room} /> : null}
+                  {room.phase === "combat" && !aiGame ? <TurnTimer room={room} /> : null}
                   <TurnStatus room={room} />
                 </aside>
               )}
@@ -1731,7 +1735,7 @@ function TurnTimer({ room }: { room: ClientRoomState }) {
     return () => window.clearInterval(interval);
   }, [room.phase, room.turnDeadlineAt]);
 
-  if (room.phase !== "combat" || !room.turnDeadlineAt || !room.activePlayer) {
+  if (room.phase !== "combat" || !room.turnDeadlineAt || !room.activePlayer || isAiGame(room)) {
     return null;
   }
 

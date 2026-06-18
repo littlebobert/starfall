@@ -22,6 +22,7 @@ import {
   isValidDeviceId,
   isConsumableId,
   isAiPlayer,
+  isAiGame,
   launchCombat,
   bothCrewDeployed,
   markRematchReady,
@@ -894,7 +895,7 @@ function clearTurnTimer(roomCode: string) {
 function scheduleTurnTimerIfNeeded(room: RoomState) {
   clearTurnTimer(room.code);
 
-  if (room.phase !== "combat" || !room.activePlayer || !room.turnDeadlineAt) {
+  if (room.phase !== "combat" || !room.activePlayer || !room.turnDeadlineAt || isAiGame(room)) {
     return;
   }
 
@@ -923,7 +924,7 @@ async function resolveTimedOutTurn(roomCode: string, expectedPlayerId: PlayerId,
     return;
   }
 
-  if (isAiPlayer(room, expectedPlayerId)) {
+  if (isAiPlayer(room, expectedPlayerId) || isAiGame(room)) {
     return;
   }
 

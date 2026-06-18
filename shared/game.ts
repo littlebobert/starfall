@@ -508,6 +508,10 @@ export function isAiPlayer(room: RoomState, playerId: PlayerId): boolean {
   return Boolean(room.players[playerId]?.isAi);
 }
 
+export function isAiGame(room: RoomState): boolean {
+  return PLAYER_IDS.some((playerId) => isAiPlayer(room, playerId));
+}
+
 export function canStartCombat(room: RoomState): boolean {
   return PLAYER_IDS.every((id) => room.players[id]?.connected);
 }
@@ -606,7 +610,7 @@ export function launchCombat(room: RoomState): RoomState {
     players,
     turn: 1,
     activePlayer: firstPlayer,
-    turnDeadlineAt: createTurnDeadline(),
+    turnDeadlineAt: isAiGame(room) ? undefined : createTurnDeadline(),
     winner: undefined,
     log: appendToBattleLog(
       room.log,
@@ -954,7 +958,7 @@ export function resolvePlayerTurn(
     players: nextPlayers,
     turn: room.turn + 1,
     activePlayer: winner ? undefined : opponent,
-    turnDeadlineAt: winner ? undefined : createTurnDeadline(),
+    turnDeadlineAt: winner || isAiGame(room) ? undefined : createTurnDeadline(),
     log: nextLog,
     winner,
     lastFireDebug: fireDebug ?? room.lastFireDebug
